@@ -154,7 +154,7 @@ router.get('/me', requireAuth, async (req, res) => {
       SELECT
         u.id, u.email, u.full_name, u.plan, u.is_beta, u.is_admin,
         u.onboarding_complete, u.created_at, u.last_active,
-        p.current_role, p.sectors, p.location, p.voice_tone,
+        p.user_role, p.sectors, p.location, p.voice_tone,
         p.voice_boldness, p.voice_length, p.linkedin_url,
         p.wa_phone, p.email_notifications, p.wa_notifications,
         s.status as subscription_status, s.current_period_end
