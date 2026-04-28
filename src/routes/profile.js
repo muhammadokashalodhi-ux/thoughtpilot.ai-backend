@@ -41,7 +41,7 @@ router.put('/', [
   }
 
   const {
-    full_name, location, current_role, years_experience,
+    full_name, location, user_role, years_experience,
     career_highlights, companies_worked, countries_worked,
     credentials, sectors, voice_tone, voice_boldness,
     voice_length, linkedin_url, wa_phone, wa_apikey,
@@ -53,7 +53,7 @@ router.put('/', [
       UPDATE profiles SET
         full_name           = COALESCE($1,  full_name),
         location            = COALESCE($2,  location),
-        current_role        = COALESCE($3,  current_role),
+        user_role           = COALESCE($3,  user_role),
         years_experience    = COALESCE($4,  years_experience),
         career_highlights   = COALESCE($5,  career_highlights),
         companies_worked    = COALESCE($6,  companies_worked),
@@ -73,7 +73,7 @@ router.put('/', [
       WHERE user_id = $20
       RETURNING *
     `, [
-      full_name, location, current_role, years_experience,
+      full_name, location, user_role, years_experience,
       career_highlights,
       companies_worked  ? JSON.stringify(companies_worked)  : null,
       countries_worked  ? JSON.stringify(countries_worked)  : null,

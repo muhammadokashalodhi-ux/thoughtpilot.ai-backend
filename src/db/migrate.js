@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   user_id               UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   full_name             VARCHAR(255),
   location              VARCHAR(255),
-  current_role          VARCHAR(255),
+  user_role             VARCHAR(255),
   years_experience      INTEGER DEFAULT 0,
   career_highlights     TEXT,
   companies_worked      TEXT[],
