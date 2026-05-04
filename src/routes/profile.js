@@ -76,7 +76,7 @@ router.post('/', async (req, res) => {
       [
         req.user.id, full_name, location, user_role, years_experience,
         user_headline,
-        sectors ? JSON.stringify(sectors) : null,
+        Array.isArray(sectors) ? JSON.stringify(sectors) : sectors,
         companies, countries, achievements, credentials,
         cv_raw, projects, awards,
         voice_boldness, voice_tone, post_length, style_notes,
