@@ -6,10 +6,18 @@ const express = require('express');
 const cors    = require('cors');
 const helmet  = require('helmet');
 
-const { apiLimiter } = require('./middleware/rateLimit');
-const authRoutes    = require('./routes/auth');
-const profileRoutes = require('./routes/profile');
-const adminRoutes   = require('./routes/admin');
+const { apiLimiter }      = require('./middleware/rateLimit');
+const authRoutes          = require('./routes/auth');
+const profileRoutes       = require('./routes/profile');
+const adminRoutes         = require('./routes/admin');
+const postsRouter         = require('./routes/posts');
+const trendsRouter        = require('./routes/trends');
+const dashboardRouter     = require('./routes/dashboard');
+const commentsRouter      = require('./routes/comments');
+const calendarRouter      = require('./routes/calendar');
+const analyticsRouter     = require('./routes/analytics');
+const notificationsRouter = require('./routes/notifications');
+const settingsRouter      = require('./routes/settings');
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -59,9 +67,17 @@ app.get('/health', (req, res) => {
 });
 
 // ── Routes ──
-app.use('/api/auth',    authRoutes);
-app.use('/api/profile', profileRoutes);
-app.use('/api/admin',   adminRoutes);
+app.use('/api/auth',          authRoutes);
+app.use('/api/profile',       profileRoutes);
+app.use('/api/admin',         adminRoutes);
+app.use('/api/posts',         postsRouter);
+app.use('/api/trends',        trendsRouter);
+app.use('/api/dashboard',     dashboardRouter);
+app.use('/api/comments',      commentsRouter);
+app.use('/api/calendar',      calendarRouter);
+app.use('/api/analytics',     analyticsRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/settings',      settingsRouter);
 
 // ── 404 ──
 app.use((req, res) => {
