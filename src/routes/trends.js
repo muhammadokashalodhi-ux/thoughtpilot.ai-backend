@@ -32,15 +32,16 @@ router.get('/', requireAuth, async (req, res) => {
         ? Object.keys(rawSectors)
         : [];
 
-    const sectorsKey = JSON.stringify([...sectors].sort()); // stable cache key
+    // trends_cache.sectors is TEXT[] — pass sorted JS array directly
+    const sortedSectors = [...sectors].sort();
 
     // Check cache unless forced refresh
     if (refresh !== 'true') {
       const cached = await query(
         `SELECT trends_data, fetched_at, expires_at FROM trends_cache
-         WHERE sectors::text = $1 AND expires_at > NOW()
+         WHERE sectors = $1 AND expires_at > NOW()
          ORDER BY fetched_at DESC LIMIT 1`,
-        [sectorsKey]
+        [sortedSectors]  // pg driver converts JS array -> TEXT[] automatically
       );
       if (cached.rows.length) {
         return res.json({
@@ -55,13 +56,12 @@ router.get('/', requireAuth, async (req, res) => {
     // Generate fresh trends via Groq
     const trendsData = await fetchTrendsFromGroq(sectors);
 
-    // Upsert cache
     const expiresAt = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000);
-    // FIX: explicit ::jsonb casts so Postgres parses the JSON strings correctly
+    // sectors -> TEXT[] (pass array), trends_data -> JSONB (pass string + ::jsonb cast)
     await query(
       `INSERT INTO trends_cache (id, sectors, trends_data, fetched_at, expires_at)
-       VALUES (uuid_generate_v4(), $1::jsonb, $2::jsonb, NOW(), $3)`,
-      [sectorsKey, JSON.stringify(trendsData), expiresAt]
+       VALUES (uuid_generate_v4(), $1, $2::jsonb, NOW(), $3)`,
+      [sortedSectors, JSON.stringify(trendsData), expiresAt]
     );
 
     res.json({
