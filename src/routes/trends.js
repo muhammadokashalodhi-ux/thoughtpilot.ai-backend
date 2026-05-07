@@ -24,8 +24,15 @@ router.get('/', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Profile not found. Please complete onboarding.' });
     }
 
-    const sectors = profileResult.rows[0].sectors || [];
-    const sectorsKey = JSON.stringify([...sectors].sort()); // stable key
+    // FIX: sectors is JSONB — Postgres returns it already parsed as a JS value
+    const rawSectors = profileResult.rows[0].sectors;
+    const sectors = Array.isArray(rawSectors)
+      ? rawSectors
+      : rawSectors && typeof rawSectors === 'object'
+        ? Object.keys(rawSectors)
+        : [];
+
+    const sectorsKey = JSON.stringify([...sectors].sort()); // stable cache key
 
     // Check cache unless forced refresh
     if (refresh !== 'true') {
@@ -50,9 +57,10 @@ router.get('/', requireAuth, async (req, res) => {
 
     // Upsert cache
     const expiresAt = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000);
+    // FIX: explicit ::jsonb casts so Postgres parses the JSON strings correctly
     await query(
       `INSERT INTO trends_cache (id, sectors, trends_data, fetched_at, expires_at)
-       VALUES (uuid_generate_v4(), $1, $2, NOW(), $3)`,
+       VALUES (uuid_generate_v4(), $1::jsonb, $2::jsonb, NOW(), $3)`,
       [sectorsKey, JSON.stringify(trendsData), expiresAt]
     );
 
@@ -83,9 +91,13 @@ router.post('/post-ideas', requireAuth, async (req, res) => {
     );
     const profile = profileResult.rows[0] || {};
 
-    const sectors = Array.isArray(profile.sectors)
-      ? profile.sectors.join(', ')
-      : 'supply chain';
+    const rawSectors = profile.sectors;
+    const sectorList = Array.isArray(rawSectors)
+      ? rawSectors.join(', ')
+      : rawSectors && typeof rawSectors === 'object'
+        ? Object.keys(rawSectors).join(', ')
+        : 'supply chain';
+    const sectors = sectorList;
 
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',

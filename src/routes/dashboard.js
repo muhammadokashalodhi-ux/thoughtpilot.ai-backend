@@ -16,10 +16,10 @@ router.get('/stats', requireAuth, async (req, res) => {
       pillarsResult,
       streakResult,
     ] = await Promise.all([
-      // Profile completeness
+      // Profile completeness — prefix all columns to avoid ambiguity (full_name exists on both tables)
       query(
-        `SELECT full_name, user_role, user_headline, sectors, voice_tone,
-                post_length, style_notes, content_pillars, onboarding_complete
+        `SELECT p.full_name, p.user_role, p.user_headline, p.sectors, p.voice_tone,
+                p.post_length, p.style_notes, p.content_pillars, u.onboarding_complete
          FROM profiles p
          JOIN users u ON u.id = p.user_id
          WHERE p.user_id = $1`,
@@ -133,7 +133,9 @@ router.get('/activity', requireAuth, async (req, res) => {
 
     const activityMap = {};
     result.rows.forEach((r) => {
-      const day = r.day.toISOString?.().split('T')[0] || r.day;
+      const day = r.day instanceof Date
+        ? r.day.toISOString().split('T')[0]
+        : String(r.day).split('T')[0];
       if (!activityMap[day]) activityMap[day] = { generated: 0, approved: 0 };
       if (r.status === 'approved') activityMap[day].approved += parseInt(r.count);
       else activityMap[day].generated += parseInt(r.count);
