@@ -5,7 +5,7 @@ const router     = express.Router();
 const { query }  = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const axios      = require('axios');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
 // ── GET /api/notifications/settings ──────────────────────────────────────────
 router.get('/settings', requireAuth, async (req, res) => {
@@ -164,16 +164,17 @@ router.post('/test-email', requireAuth, async (req, res) => {
 
     console.log('[Email] Sending from:', emailFrom, 'to:', emailTo);
 
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: emailFrom, pass: emailPass },
-      connectionTimeout: 10000,  // 10 s to establish TCP connection
-      greetingTimeout:    8000,  // 8 s to receive SMTP greeting
-      socketTimeout:     15000,  // 15 s socket inactivity before abort
-    });
+    const resendApiKey = process.env.RESEND_API_KEY;
+    if (!resendApiKey) {
+      return res.status(400).json({
+        error: 'RESEND_API_KEY environment variable is not set. Add it in Railway → Variables.'
+      });
+    }
 
-    await transporter.sendMail({
-      from:    `ThoughtPilot AI <${emailFrom}>`,
+    const resend = new Resend(resendApiKey);
+
+    const { error: sendError } = await resend.emails.send({
+      from:    'ThoughtPilot AI <onboarding@resend.dev>', // use your verified domain once set up
       to:      emailTo,
       subject: '✅ ThoughtPilot AI — Email notifications connected',
       html: `
@@ -191,6 +192,8 @@ router.post('/test-email', requireAuth, async (req, res) => {
         </div>
       `,
     });
+
+    if (sendError) throw new Error(sendError.message);
 
     await query(
       `INSERT INTO notification_log (id, user_id, type, channel, subject, body, success, sent_at)
