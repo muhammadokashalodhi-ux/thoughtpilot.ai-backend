@@ -167,10 +167,10 @@ router.post('/test-email', requireAuth, async (req, res) => {
     const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: { user: emailFrom, pass: emailPass },
+      connectionTimeout: 10000,  // 10 s to establish TCP connection
+      greetingTimeout:    8000,  // 8 s to receive SMTP greeting
+      socketTimeout:     15000,  // 15 s socket inactivity before abort
     });
-
-    // Verify connection first
-    await transporter.verify();
 
     await transporter.sendMail({
       from:    `ThoughtPilot AI <${emailFrom}>`,
