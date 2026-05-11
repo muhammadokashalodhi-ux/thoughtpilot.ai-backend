@@ -27,10 +27,11 @@ router.post('/', async (req, res) => {
     full_name, location, user_role, years_experience,
     user_headline, sectors,
     companies, countries, achievements, credentials,
-    cv_raw, projects, awards,
+    about_summary, projects, awards,
     voice_boldness, voice_tone, post_length, style_notes,
     content_pillars,
     wa_phone, wa_apikey, email_notifications, wa_notifications,
+    credentials_structured, experience_structured,
   } = req.body;
 
   try {
@@ -39,15 +40,16 @@ router.post('/', async (req, res) => {
         user_id, full_name, location, user_role, years_experience,
         user_headline, sectors,
         companies, countries, achievements, credentials,
-        cv_raw, projects, awards,
+        about_summary, projects, awards,
         voice_boldness, voice_tone, post_length, style_notes,
         content_pillars,
         wa_phone, wa_apikey, email_notifications, wa_notifications,
+        credentials_structured, experience_structured,
         updated_at
       )
       VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-        $15,$16,$17,$18,$19,$20,$21,$22,$23, NOW()
+        $15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25, NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
         full_name           = COALESCE(EXCLUDED.full_name,           profiles.full_name),
@@ -60,7 +62,7 @@ router.post('/', async (req, res) => {
         countries           = COALESCE(EXCLUDED.countries,           profiles.countries),
         achievements        = COALESCE(EXCLUDED.achievements,        profiles.achievements),
         credentials         = COALESCE(EXCLUDED.credentials,         profiles.credentials),
-        cv_raw              = COALESCE(EXCLUDED.cv_raw,              profiles.cv_raw),
+        about_summary       = COALESCE(EXCLUDED.about_summary,       profiles.about_summary),
         projects            = COALESCE(EXCLUDED.projects,            profiles.projects),
         awards              = COALESCE(EXCLUDED.awards,              profiles.awards),
         voice_boldness      = COALESCE(EXCLUDED.voice_boldness,      profiles.voice_boldness),
@@ -72,16 +74,20 @@ router.post('/', async (req, res) => {
         wa_apikey           = COALESCE(EXCLUDED.wa_apikey,           profiles.wa_apikey),
         email_notifications = COALESCE(EXCLUDED.email_notifications, profiles.email_notifications),
         wa_notifications    = COALESCE(EXCLUDED.wa_notifications,    profiles.wa_notifications),
+        credentials_structured = COALESCE(EXCLUDED.credentials_structured, profiles.credentials_structured),
+        experience_structured  = COALESCE(EXCLUDED.experience_structured,  profiles.experience_structured),
         updated_at          = NOW()`,
       [
         req.user.id, full_name, location, user_role, years_experience,
         user_headline,
         Array.isArray(sectors) ? JSON.stringify(sectors) : sectors,
         companies, countries, achievements, credentials,
-        cv_raw, projects, awards,
+        about_summary, projects, awards,
         voice_boldness, voice_tone, post_length, style_notes,
         content_pillars ? JSON.stringify(content_pillars) : null,
         wa_phone, wa_apikey, email_notifications, wa_notifications,
+        credentials_structured ? JSON.stringify(credentials_structured) : null,
+        experience_structured ? JSON.stringify(experience_structured) : null,
       ]
     );
 
