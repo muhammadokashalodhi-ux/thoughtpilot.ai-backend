@@ -18,6 +18,7 @@ const calendarRouter      = require('./routes/calendar');
 const analyticsRouter     = require('./routes/analytics');
 const notificationsRouter = require('./routes/notifications');
 const settingsRouter      = require('./routes/settings');
+const careerRoutes        = require('./routes/career');
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -78,6 +79,7 @@ app.use('/api/calendar',      calendarRouter);
 app.use('/api/analytics',     analyticsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings',      settingsRouter);
+app.use('/api/career',        careerRoutes);
 
 // ── 404 ──
 app.use((req, res) => {
