@@ -18,7 +18,7 @@ const calendarRouter      = require('./routes/calendar');
 const analyticsRouter     = require('./routes/analytics');
 const notificationsRouter = require('./routes/notifications');
 const settingsRouter      = require('./routes/settings');
-const careerRoutes        = require('./routes/career');
+const careerRoutes        = require('./routes/career-suite');
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
