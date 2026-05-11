@@ -5,7 +5,7 @@ const router     = express.Router();
 const { query }  = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const axios      = require('axios');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
 // ── GET /api/notifications/settings ──────────────────────────────────────────
 router.get('/settings', requireAuth, async (req, res) => {
@@ -164,36 +164,53 @@ router.post('/test-email', requireAuth, async (req, res) => {
 
     console.log('[Email] Sending from:', emailFrom, 'to:', emailTo);
 
-    const resendApiKey = process.env.RESEND_API_KEY;
-    if (!resendApiKey) {
-      return res.status(400).json({
-        error: 'RESEND_API_KEY environment variable is not set. Add it in Railway → Variables.'
-      });
-    }
+    // Use Gmail REST API over HTTPS port 443 — works on Railway where SMTP is blocked
+    const { google } = require('googleapis');
 
-    const resend = new Resend(resendApiKey);
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GMAIL_CLIENT_ID,
+      process.env.GMAIL_CLIENT_SECRET,
+      'https://developers.google.com/oauthplayground'
+    );
+    oauth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 
-    const { error: sendError } = await resend.emails.send({
-      from:    'ThoughtPilot AI <onboarding@resend.dev>', // use your verified domain once set up
-      to:      emailTo,
-      subject: '✅ ThoughtPilot AI — Email notifications connected',
-      html: `
-        <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; color: #111; padding: 20px;">
-          <h2 style="color: #2563eb;">ThoughtPilot AI</h2>
-          <p>Hi ${user?.full_name || 'there'},</p>
-          <p>Your email notifications are now connected! 🎉</p>
-          <p>You will receive notifications here when:</p>
-          <ul>
-            <li>A new LinkedIn post is generated and ready for review</li>
-            <li>Your weekly content calendar is reset every Sunday</li>
-          </ul>
-          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-          <p style="color: #6b7280; font-size: 13px;">ThoughtPilot AI — Your LinkedIn Co-pilot</p>
-        </div>
-      `,
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    const htmlBody = `
+      <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; color: #111; padding: 20px;">
+        <h2 style="color: #2563eb;">ThoughtPilot AI</h2>
+        <p>Hi ${user?.full_name || 'there'},</p>
+        <p>Your email notifications are now connected! 🎉</p>
+        <p>You will receive notifications here when:</p>
+        <ul>
+          <li>A new LinkedIn post is generated and ready for review</li>
+          <li>Your weekly content calendar is reset every Sunday</li>
+        </ul>
+        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+        <p style="color: #6b7280; font-size: 13px;">ThoughtPilot AI — Your LinkedIn Co-pilot</p>
+      </div>
+    `;
+
+    const rawMessage = [
+      `From: ThoughtPilot AI <${emailFrom}>`,
+      `To: ${emailTo}`,
+      `Subject: =?UTF-8?B?${Buffer.from('✅ ThoughtPilot AI — Email notifications connected').toString('base64')}?=`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=UTF-8',
+      '',
+      htmlBody,
+    ].join('\r\n');
+
+    const encoded = Buffer.from(rawMessage)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: encoded },
     });
-
-    if (sendError) throw new Error(sendError.message);
 
     await query(
       `INSERT INTO notification_log (id, user_id, type, channel, subject, body, success, sent_at)
