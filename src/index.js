@@ -31,6 +31,8 @@ app.use(helmet({
 // ── CORS ──
 const allowedOrigins = [
   process.env.FRONTEND_URL,
+  'https://www.thoughtpilotai.com',
+  'https://thoughtpilotai.com',
   'http://localhost:3000',
   'http://localhost:3001',
 ].filter(Boolean);
