@@ -161,17 +161,23 @@ router.get('/users/:id/profile', async (req, res) => {
 // ══════════════════════════════════════════
 // GET /api/admin/feedback
 // ══════════════════════════════════════════
-router.get('/feedback', async (req, res) => {
+router.get('/feedback', requireAdmin, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Forbidden' });
   try {
     const result = await query(`
-      SELECT f.*, u.email, u.full_name
+      SELECT
+        f.id, f.user_id, f.week_number, f.rating,
+        f.what_worked, f.what_broke, f.what_missing, f.general_notes,
+        f.created_at,
+        u.full_name, u.email
       FROM feedback f
       JOIN users u ON u.id = f.user_id
-      ORDER BY f.submitted_at DESC
+      ORDER BY f.created_at DESC
     `);
-    res.json(result.rows);
+    res.json({ feedback: result.rows });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Admin feedback error:', err);
+    res.status(500).json({ error: 'Failed to fetch feedback' });
   }
 });
 
@@ -190,25 +196,6 @@ router.get('/posts', async (req, res) => {
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
-  }
-});
-router.get('/feedback', requireAuth, async (req, res) => {
-  if (!req.user.is_admin) return res.status(403).json({ error: 'Forbidden' });
-  try {
-    const result = await query(`
-      SELECT
-        f.id, f.user_id, f.week_number, f.rating,
-        f.what_worked, f.what_broke, f.what_missing, f.general_notes,
-        f.created_at,
-        u.full_name, u.email
-      FROM feedback f
-      JOIN users u ON u.id = f.user_id
-      ORDER BY f.created_at DESC
-    `);
-    res.json({ feedback: result.rows });
-  } catch (err) {
-    console.error('Admin feedback error:', err);
-    res.status(500).json({ error: 'Failed to fetch feedback' });
   }
 });
 module.exports = router;
