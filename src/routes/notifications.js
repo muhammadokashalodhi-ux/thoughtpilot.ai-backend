@@ -38,7 +38,8 @@ router.get('/settings', requireAuth, async (req, res) => {
   try {
     const result = await query(
       `SELECT wa_phone, wa_apikey, email_notifications, wa_notifications,
-              post_schedule, timezone, notification_email
+              post_schedule, timezone, notification_email,
+              auto_schedule, post_time
        FROM profiles WHERE user_id = $1`,
       [req.user.id]
     );
@@ -54,6 +55,9 @@ router.get('/settings', requireAuth, async (req, res) => {
         post_schedule:       row.post_schedule,
         timezone:            row.timezone             || 'UTC',
         email_service_ready: !!process.env.RESEND_API_KEY,
+        // ── Automation fields ──
+        auto_schedule:       row.auto_schedule       ?? false,
+        post_time:           row.post_time           || '09:00',
       },
     });
   } catch (err) {
@@ -69,6 +73,8 @@ router.patch('/settings', requireAuth, async (req, res) => {
       wa_phone, wa_apikey,
       email_notifications, wa_notifications,
       notification_email, post_schedule, timezone,
+      // ── Automation fields ──
+      auto_schedule, post_time,
     } = req.body;
 
     const updates = [];
@@ -87,6 +93,9 @@ router.patch('/settings', requireAuth, async (req, res) => {
     add('notification_email',  notification_email);
     add('post_schedule',       post_schedule);
     add('timezone',            timezone);
+    // ── Automation fields ──
+    add('auto_schedule',       auto_schedule);
+    add('post_time',           post_time);
 
     if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
     params.push(req.user.id);
