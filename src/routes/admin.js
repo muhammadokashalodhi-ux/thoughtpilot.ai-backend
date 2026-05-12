@@ -48,11 +48,12 @@ router.get('/users', async (req, res) => {
   try {
     const result = await query(`
       SELECT
-        u.id, u.email, u.full_name, u.plan, u.is_beta, u.is_active,
-        u.onboarding_complete, u.created_at, u.last_active,
-        p.current_role, p.sectors, p.location,
-        s.status as subscription_status,
-        COUNT(posts.id) as post_count
+        u.id, u.email, u.full_name, u.plan, u.is_beta, u.is_admin,
+        u.is_active, u.onboarding_complete, u.created_at,
+        p.user_role, p.sectors, p.location,
+        s.status AS subscription_status,
+        COUNT(posts.id)::int AS post_count,
+        MAX(posts.created_at) AS last_post_at
       FROM users u
       LEFT JOIN profiles p ON p.user_id = u.id
       LEFT JOIN subscriptions s ON s.user_id = u.id
@@ -191,5 +192,23 @@ router.get('/posts', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
+router.get('/feedback', requireAuth, async (req, res) => {
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const result = await query(`
+      SELECT
+        f.id, f.user_id, f.week_number, f.rating,
+        f.what_worked, f.what_broke, f.what_missing, f.general_notes,
+        f.created_at,
+        u.full_name, u.email
+      FROM feedback f
+      JOIN users u ON u.id = f.user_id
+      ORDER BY f.created_at DESC
+    `);
+    res.json({ feedback: result.rows });
+  } catch (err) {
+    console.error('Admin feedback error:', err);
+    res.status(500).json({ error: 'Failed to fetch feedback' });
+  }
+});
 module.exports = router;
