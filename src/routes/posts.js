@@ -290,11 +290,12 @@ function buildSystemPrompt(profile) {
     long: '400–600 words',
   }[length] || '250–400 words';
 
-  return `You are a world-class LinkedIn ghostwriter for senior Supply Chain Management professionals.
+  return `You are a world-class LinkedIn ghostwriter for  senior professionals across any industry.
 
 AUTHOR CONTEXT:
 - Name: ${profile.full_name || 'the author'}
-- Role: ${profile.user_role || 'SCM Professional'}
+- Role: ${profile.user_role || 'Professional'}
+- Industries / Sectors: ${Array.isArray(profile.sectors) ? profile.sectors.join(', ') : 'general'}
 - Experience: ${profile.years_experience || '10'}+ years
 - Headline: ${profile.user_headline || ''}
 - Credentials: ${profile.credentials || ''}

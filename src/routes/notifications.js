@@ -52,7 +52,7 @@ router.get('/settings', requireAuth, async (req, res) => {
         email_notifications: row.email_notifications ?? false,
         notification_email:  row.notification_email  || null,
         post_schedule:       row.post_schedule,
-        timezone:            row.timezone             || 'Asia/Dubai',
+        timezone:            row.timezone             || 'UTC',
         email_service_ready: !!process.env.RESEND_API_KEY,
       },
     });

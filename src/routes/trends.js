@@ -7,8 +7,8 @@ const axios = require('axios');
 const CACHE_TTL_HOURS = 6;
 
 // ─── GET /api/trends ─────────────────────────────────────────────────────────
-// Returns SCM trends aligned to the user's sectors
-// Caches per-sectors-hash for CACHE_TTL_HOURS hours in trends_cache table
+// Returns industry trends aligned to the user's selected sectors (any profession).
+// Caches per-sectors-hash for CACHE_TTL_HOURS hours in trends_cache table.
 router.get('/', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -24,7 +24,7 @@ router.get('/', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Profile not found. Please complete onboarding.' });
     }
 
-    // FIX: sectors is JSONB — Postgres returns it already parsed as a JS value
+    // sectors is JSONB — Postgres returns it already parsed
     const rawSectors = profileResult.rows[0].sectors;
     const sectors = Array.isArray(rawSectors)
       ? rawSectors
@@ -41,7 +41,7 @@ router.get('/', requireAuth, async (req, res) => {
         `SELECT trends_data, fetched_at, expires_at FROM trends_cache
          WHERE sectors = $1 AND expires_at > NOW()
          ORDER BY fetched_at DESC LIMIT 1`,
-        [sortedSectors]  // pg driver converts JS array -> TEXT[] automatically
+        [sortedSectors]
       );
       if (cached.rows.length) {
         return res.json({
@@ -57,7 +57,6 @@ router.get('/', requireAuth, async (req, res) => {
     const trendsData = await fetchTrendsFromGroq(sectors);
 
     const expiresAt = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000);
-    // sectors -> TEXT[] (pass array), trends_data -> JSONB (pass string + ::jsonb cast)
     await query(
       `INSERT INTO trends_cache (id, sectors, trends_data, fetched_at, expires_at)
        VALUES (uuid_generate_v4(), $1, $2::jsonb, NOW(), $3)`,
@@ -96,7 +95,7 @@ router.post('/post-ideas', requireAuth, async (req, res) => {
       ? rawSectors.join(', ')
       : rawSectors && typeof rawSectors === 'object'
         ? Object.keys(rawSectors).join(', ')
-        : 'supply chain';
+        : 'their industry';
     const sectors = sectorList;
 
     const groqRes = await axios.post(
@@ -108,7 +107,8 @@ router.post('/post-ideas', requireAuth, async (req, res) => {
         messages: [
           {
             role: 'system',
-            content: `You are a LinkedIn content strategist for senior SCM professionals.
+            content: `You are a LinkedIn content strategist for senior professionals across any industry.
+Adapt your tone and references to the author's sector(s) and role.
 Output ONLY a JSON array of exactly 3 objects, each with: title (string), angle (string, 1 sentence), hook (string, opening line for the post).
 No preamble, no markdown, no extra text.`,
           },
@@ -116,10 +116,10 @@ No preamble, no markdown, no extra text.`,
             role: 'user',
             content: `Trend: "${trend_title}"
 Summary: ${trend_summary || ''}
-Author: ${profile.full_name || 'SCM professional'}, ${profile.user_role || 'Supply Chain Leader'}, ${profile.years_experience || '10'}+ years
+Author: ${profile.full_name || 'Industry professional'}, ${profile.user_role || 'Professional'}, ${profile.years_experience || '10'}+ years
 Sectors: ${sectors}
 
-Generate 3 distinct LinkedIn post ideas this author could write about this trend.`,
+Generate 3 distinct LinkedIn post ideas this author could write about this trend, tailored to their sector(s) and role.`,
           },
         ],
       },
@@ -150,11 +150,17 @@ Generate 3 distinct LinkedIn post ideas this author could write about this trend
 
 // ─── Groq helper ─────────────────────────────────────────────────────────────
 async function fetchTrendsFromGroq(sectors) {
-  const sectorList = Array.isArray(sectors) ? sectors.join(', ') : 'supply chain';
+  const sectorList = Array.isArray(sectors) && sectors.length
+    ? sectors.join(', ')
+    : '';
 
-  const prompt = `You are a Supply Chain intelligence analyst. Generate a JSON object with current, realistic SCM industry trends.
+  const prompt = `You are a multi-industry intelligence analyst. Generate a JSON object with current, realistic trends for the user's selected professional sectors.
 
-Sectors in focus: ${sectorList || 'supply chain management generally'}
+Sectors in focus: ${sectorList || 'general professional landscape'}
+
+Tailor every trend, stat, and pulse entry to the listed sectors. Use sector-specific terminology, named technologies, recent regulations, and well-known players where relevant. Do NOT default to supply chain unless it is explicitly listed.
+
+Categories should be chosen from this set, picking whatever fits each sector best: technology, geopolitics, sustainability, labor, risk, demand, regulation, innovation, finance, talent, consumer, policy.
 
 Return ONLY a valid JSON object with this exact shape (no markdown, no preamble):
 {
@@ -171,11 +177,11 @@ Return ONLY a valid JSON object with this exact shape (no markdown, no preamble)
       "id": "t1",
       "title": "string",
       "summary": "2-3 sentence summary",
-      "category": "technology|geopolitics|sustainability|labor|risk|demand|regulation",
+      "category": "one of the categories above",
       "impact": "high|medium|low",
       "relevance_score": 0-100,
       "tags": ["string"],
-      "post_angle": "One sentence on how an SCM leader could write about this"
+      "post_angle": "One sentence on how a professional in the relevant sector could write about this on LinkedIn"
     }
   ],
   "quick_stats": [
@@ -186,8 +192,8 @@ Return ONLY a valid JSON object with this exact shape (no markdown, no preamble)
   ]
 }
 
-Include 6 trends, 4 quick stats, and sector_pulse entries for each sector in focus.
-Make the data realistic and specific to current global SCM conditions (2025).`;
+Include 6 trends, 4 quick stats, and one sector_pulse entry for each sector in focus.
+Make the data realistic and specific to current global conditions (2025).`;
 
   const groqRes = await axios.post(
     'https://api.groq.com/openai/v1/chat/completions',
@@ -196,7 +202,7 @@ Make the data realistic and specific to current global SCM conditions (2025).`;
       max_tokens: 2000,
       temperature: 0.4,
       messages: [
-        { role: 'system', content: 'You are a supply chain market intelligence analyst. Always respond with valid JSON only.' },
+        { role: 'system', content: 'You are a cross-industry market intelligence analyst. Always respond with valid JSON only.' },
         { role: 'user', content: prompt },
       ],
     },
@@ -215,15 +221,14 @@ Make the data realistic and specific to current global SCM conditions (2025).`;
   try {
     return JSON.parse(cleaned);
   } catch {
-    // Return a fallback structure
     return {
       generated_at: new Date().toISOString(),
       sectors_analyzed: Array.isArray(sectors) ? sectors : [],
       headline_trend: {
-        title: 'AI-Driven Supply Chain Resilience',
-        summary: 'Companies are accelerating adoption of AI tools to build more resilient and adaptive supply chains in response to ongoing global disruptions.',
+        title: 'AI Reshaping Work Across Industries',
+        summary: 'Professionals across every sector are rapidly adopting AI tools to augment decision-making, automate routine work, and unlock new product and service categories.',
         impact: 'high',
-        tags: ['AI', 'resilience', 'disruption'],
+        tags: ['AI', 'productivity', 'transformation'],
       },
       trends: [],
       quick_stats: [],

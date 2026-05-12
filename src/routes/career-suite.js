@@ -23,7 +23,7 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
         messages: [
           {
             role: 'system',
-            content: `You are an expert CV/resume reviewer specializing in ATS optimization and supply chain roles in UAE/GCC.
+            content: `You are an expert CV/resume reviewer specializing in ATS optimization across industries and geographies.
 Return ONLY valid JSON, no markdown, no explanation.`,
           },
           {
@@ -59,7 +59,7 @@ Return ONLY this JSON structure:
       "type": "improvement",
       "original": "current skills section",
       "suggested": "improved version with ATS keywords",
-      "reason": "Missing high-value ATS keywords for SCM roles"
+      "reason": "Missing high-value ATS keywords for the target role"
     }
   ]
 }

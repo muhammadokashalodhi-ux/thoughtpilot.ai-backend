@@ -74,7 +74,7 @@ router.post('/generate', requireAuth, async (req, res) => {
 
     // Call Groq to plan the week
     const pillarList = pillars.map((p, i) => `${i + 1}. ${p.pillar_icon} ${p.pillar_name}: ${p.description}`).join('\n');
-    const sectors = Array.isArray(profile.sectors) ? profile.sectors.join(', ') : 'supply chain';
+    const sectors = Array.isArray(profile.sectors) ? profile.sectors.join(', ') : 'general';
 
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
@@ -85,7 +85,7 @@ router.post('/generate', requireAuth, async (req, res) => {
         messages: [
           {
             role: 'system',
-            content: `You are a LinkedIn content strategist for SCM professionals. Plan a week of LinkedIn content.
+            content: `You are a LinkedIn content strategist for professionals across any industry. Plan a week of LinkedIn content.
 Output ONLY valid JSON — no markdown, no preamble.
 JSON shape: { "plan": [ { "day_name": string, "pillar_name": string, "theme": string, "topic": string, "category": string, "post_type": string } ] }
 post_type must be one of: linkedin_post, insight, story, tip, opinion, case_study
@@ -93,7 +93,7 @@ category must be one of: thought_leadership, education, engagement, personal`,
           },
           {
             role: 'user',
-            content: `Author: ${profile.full_name || 'SCM Leader'}, ${profile.user_role || 'Supply Chain Professional'}
+            content: `Author: ${profile.full_name || 'Professional'}, ${profile.user_role || 'Professional'}
 Sectors: ${sectors}
 Posting days this week: ${days_to_post.join(', ')}
 
@@ -267,7 +267,7 @@ router.post('/:id/generate-post', requireAuth, async (req, res) => {
         messages: [
           {
             role: 'system',
-            content: `You are a LinkedIn ghostwriter for ${profile.full_name || 'a senior SCM professional'}, ${profile.user_role || 'Supply Chain Leader'}.
+            content: `You are a LinkedIn ghostwriter for ${profile.full_name || 'a senior professional'}, ${profile.user_role || 'Industry Leader'}.
 Voice: ${profile.voice_tone || 'professional'}, boldness ${boldness}/10. Length: ${length}.
 End with HASHTAGS: #tag1 #tag2 #tag3 on the last line. Start the post immediately.`,
           },

@@ -1,4 +1,4 @@
-const express = require('express');
+  const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
 const { requireAuth } = require('../middleware/auth');
@@ -28,11 +28,12 @@ router.post('/generate', requireAuth, async (req, res) => {
     const tone = tone_override || profile.voice_tone || 'professional';
     const boldness = profile.voice_boldness || 5;
 
-    const systemPrompt = `You are a LinkedIn ghostwriter helping a senior SCM professional craft authentic, high-value comments.
+    const systemPrompt = `You are a LinkedIn ghostwriter helping a senior professional craft authentic, high-value comments in their industry voice.
 
 AUTHOR PROFILE:
 - Name: ${profile.full_name || 'the author'}
-- Role: ${profile.user_role || 'SCM Professional'}
+- Role: ${profile.user_role || 'Professional'}
+- Industries: ${Array.isArray(profile.sectors) ? profile.sectors.join(', ') : 'general'}
 - Experience: ${profile.years_experience || '10'}+ years
 - Credentials: ${profile.credentials || ''}
 
@@ -50,7 +51,7 @@ COMMENT RULES:
 Output ONLY the comment text. No preamble, no label, no quotes.`;
 
     const intentGuide = {
-      add_value: 'Add a unique insight or perspective from your SCM experience that extends the post.',
+      add_value: 'Add a unique insight or perspective from your professioanl experience that extends the post.',
       agree_expand: 'Agree with the post and add a complementary point or real-world example.',
       disagree_respectfully: 'Respectfully offer a different perspective or nuance the author may have missed.',
       ask_question: 'Ask a genuinely curious, intelligent question that deepens the conversation.',
@@ -131,7 +132,7 @@ router.post('/variations', requireAuth, async (req, res) => {
         messages: [
           {
             role: 'system',
-            content: `You are a LinkedIn ghostwriter. Generate exactly 3 distinct comment variations for a senior SCM professional named ${profile.full_name || 'the author'}, ${profile.user_role || 'SCM leader'}.
+            content: `You are a LinkedIn ghostwriter. Generate exactly 3 distinct comment variations for a senior professional named ${profile.full_name || 'the author'}, ${profile.user_role || 'Industry leader'}.
 Each variation should have a different angle or opening style but same intent.
 Output ONLY valid JSON: { "variations": ["comment1", "comment2", "comment3"] }
 No preamble, no markdown, no extra text.`,
