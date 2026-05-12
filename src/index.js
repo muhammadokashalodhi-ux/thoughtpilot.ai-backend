@@ -5,6 +5,8 @@ require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
 const helmet  = require('helmet');
+const healthRouter = require('./routes/health');
+const { startAllCronJobs } = require('./cron/index');
 
 const { apiLimiter }      = require('./middleware/rateLimit');
 const authRoutes          = require('./routes/auth');
@@ -54,7 +56,7 @@ app.use(express.urlencoded({ extended: true }));
 // ── Rate limiting ──
 app.use('/api/', apiLimiter);
 
-// ── Health check ──
+// ── Root health check ──
 app.get('/', (req, res) => {
   res.json({
     service: 'SupplAI API',
@@ -70,6 +72,7 @@ app.get('/health', (req, res) => {
 });
 
 // ── Routes ──
+app.use('/api/health',        healthRouter);        // ← detailed health + DB check
 app.use('/api/auth',          authRoutes);
 app.use('/api/profile',       profileRoutes);
 app.use('/api/admin',         adminRoutes);
@@ -106,6 +109,7 @@ app.listen(PORT, () => {
   console.log(`   Database:    ${process.env.DATABASE_URL ? '✅ Configured' : '❌ Missing'}`);
   console.log(`   JWT:         ${process.env.JWT_SECRET ? '✅ Configured' : '❌ Missing'}`);
   console.log(`   Admin:       ${process.env.ADMIN_PASSWORD ? '✅ Configured' : '❌ Missing'}\n`);
+  startAllCronJobs();  // ← starts keepalive + post scheduler
 });
 
 module.exports = app;
