@@ -53,18 +53,34 @@ async function requireAdmin(req, res, next) {
     }
 
     const token = header.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    if (decoded.role !== 'admin') {
+    const result = await query(
+      `SELECT id, email, full_name, is_admin, is_active FROM users WHERE id = $1`,
+      [decoded.userId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    const user = result.rows[0];
+
+    if (!user.is_active) {
+      return res.status(403).json({ error: 'Account suspended' });
+    }
+
+    if (!user.is_admin) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    req.admin = true;
+    req.user = user;
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'Invalid admin token' });
+    return res.status(401).json({ error: 'Invalid token' });
   }
 }
+
 
 // ── Onboarding check — redirect if not complete ──
 function requireOnboarding(req, res, next) {
