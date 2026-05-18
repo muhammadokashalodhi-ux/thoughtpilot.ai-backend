@@ -8,56 +8,149 @@ const axios = require('axios');
 router.post('/generate', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { pillar_id, topic, type = 'linkedin_post', sector_context = [] } = req.body;
+    const {
+      pillar_id,
+      topic,
+      tone               = 'authentic',
+      length             = 'medium',
+      type               = 'linkedin_post',
+      sector_context     = [],
+      source             = 'manual',
+      trend_topic,
+      skip_profile_check = false,
+      no_personal_claims = false,
+      save_only          = false,
+      body:     prebuilt_body,
+      hashtags: prebuilt_hashtags,
+      status:   prebuilt_status = 'draft',
+    } = req.body;
 
-    if (!pillar_id || !topic) {
-      return res.status(400).json({ error: 'pillar_id and topic are required' });
+    // ── Save-only mode (user edited post and is saving it) ─────────────────
+    if (save_only && prebuilt_body) {
+      const result = await query(
+        `INSERT INTO posts
+           (id, user_id, pillar_id, type, topic, body, hashtags, status, source, sector_context, created_at, updated_at)
+         VALUES
+           (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+         RETURNING *`,
+        [
+          userId,
+          pillar_id || null,
+          type,
+          topic || trend_topic || '',
+          prebuilt_body,
+          prebuilt_hashtags || [],
+          prebuilt_status,
+          source,
+          sector_context,
+        ]
+      );
+      return res.json({ post: result.rows[0] });
     }
 
-    // Load user profile + pillar in parallel
-    const [profileResult, pillarResult] = await Promise.all([
-      query(
-        `SELECT full_name, user_role, years_experience, user_headline,
-                sectors, voice_boldness, voice_tone, post_length, style_notes, credentials
-         FROM profiles WHERE user_id = $1`,
-        [userId]
-      ),
-      query(
-        `SELECT pillar_name, description, prompt FROM pillars
-         WHERE id = $1 AND user_id = $2`,
-        [pillar_id, userId]
-      ),
-    ]);
+    // ── Load full profile for context ──────────────────────────────────────
+    const profileResult = await query(
+      `SELECT full_name, user_role, years_experience, user_headline,
+              sectors, companies, countries, achievements,
+              credentials, cv_raw, projects, awards,
+              voice_boldness, voice_tone, post_length, style_notes, location
+       FROM profiles WHERE user_id = $1`,
+      [userId]
+    );
 
     if (!profileResult.rows.length) {
       return res.status(404).json({ error: 'Profile not found. Please complete onboarding.' });
     }
-    if (!pillarResult.rows.length) {
-      return res.status(404).json({ error: 'Content pillar not found.' });
-    }
 
     const profile = profileResult.rows[0];
-    const pillar = pillarResult.rows[0];
 
-    // Build the prompt
-    const systemPrompt = buildSystemPrompt(profile);
-    const userPrompt = buildUserPrompt({ profile, pillar, topic, type, sector_context });
+    // ── Load pillar if provided ────────────────────────────────────────────
+    let pillar = null;
+    if (pillar_id) {
+      const pillarResult = await query(
+        `SELECT pillar_name, description, prompt FROM pillars WHERE id = $1 AND user_id = $2`,
+        [pillar_id, userId]
+      );
+      pillar = pillarResult.rows[0] || null;
+    }
 
-    // Call Groq
+    if (!pillar && !trend_topic && !topic) {
+      return res.status(400).json({ error: 'pillar_id or topic is required' });
+    }
+
+    // ── Build full profile context string ──────────────────────────────────
+    const sectors = Array.isArray(profile.sectors)
+      ? profile.sectors.join(', ')
+      : (profile.sectors ? Object.keys(profile.sectors).join(', ') : '');
+
+    const profileContext = [
+      profile.full_name        && `Name: ${profile.full_name}`,
+      profile.user_role        && `Role: ${profile.user_role}`,
+      profile.user_headline    && `Headline: ${profile.user_headline}`,
+      profile.years_experience && `Years of experience: ${profile.years_experience}`,
+      profile.location         && `Location: ${profile.location}`,
+      sectors                  && `Industry sectors: ${sectors}`,
+      profile.companies        && `Companies worked at: ${profile.companies}`,
+      profile.countries        && `Countries worked in: ${profile.countries}`,
+      profile.achievements     && `Achievements: ${profile.achievements}`,
+      profile.credentials      && `Credentials/Certifications: ${profile.credentials}`,
+      profile.projects         && `Notable projects: ${profile.projects}`,
+      profile.awards           && `Awards: ${profile.awards}`,
+      profile.cv_raw           && `CV/Bio excerpt: ${profile.cv_raw.substring(0, 800)}`,
+    ].filter(Boolean).join('\n');
+
+    const hasProfileData = profileContext.trim().length > 50;
+
+    // ── Profile relevance check ────────────────────────────────────────────
+    // If user's profile doesn't cover the pillar topic, warn before generating
+    if (!skip_profile_check && !no_personal_claims && pillar) {
+      const pillarKeywords = (pillar.pillar_name + ' ' + (pillar.description || '')).toLowerCase();
+      const profileLower   = profileContext.toLowerCase();
+
+      const stopWords = new Set([
+        'and','the','for','with','from','that','this','are','have','has','been',
+        'will','would','could','should','about','into','through','during','before',
+        'after','above','below','each','our','your','their','they','what','when',
+        'where','which','while','more','also','than','then',
+      ]);
+
+      const pillarWords = pillarKeywords
+        .replace(/[^a-z\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 3 && !stopWords.has(w));
+
+      const matchCount = pillarWords.filter(w => profileLower.includes(w)).length;
+      const matchRatio = pillarWords.length > 0 ? matchCount / pillarWords.length : 1;
+
+      if (matchRatio < 0.25 && hasProfileData) {
+        return res.json({
+          warning: `Your profile doesn't have information about "${pillar.pillar_name}". Without relevant profile data, the AI would have to fabricate personal experience — which we won't do. You can proceed with a general informational post, or update your profile first for a more personalised result.`,
+        });
+      }
+    }
+
+    // ── Build prompts ──────────────────────────────────────────────────────
+    const postTopic = trend_topic || topic || pillar?.pillar_name || 'professional insights';
+    const isTrend   = source === 'trend' || !!trend_topic;
+
+    const systemPrompt = buildSystemPrompt(profile, tone, length, no_personal_claims, profileContext, hasProfileData);
+    const userPrompt   = buildUserPrompt({ pillar, topic, postTopic, isTrend, no_personal_claims, hasProfileData, profileContext, sector_context, sectors });
+
+    // ── Call Groq ──────────────────────────────────────────────────────────
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
-        model: 'llama-3.3-70b-versatile',
-        max_tokens: 1200,
-        temperature: 0.82,
+        model:       'llama-3.3-70b-versatile',
+        max_tokens:  1200,
+        temperature: tone === 'authentic' || tone === 'storytelling' ? 0.78 : 0.65,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
+          { role: 'user',   content: userPrompt   },
         ],
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json',
         },
         timeout: 30000,
@@ -65,21 +158,20 @@ router.post('/generate', requireAuth, async (req, res) => {
     );
 
     const raw = groqRes.data.choices[0].message.content.trim();
-
-    // Parse body + hashtags from the response
     const { body, hashtags } = parsePostResponse(raw);
 
-    // Save as draft to posts table
+    // ── Save to DB ─────────────────────────────────────────────────────────
     const insertResult = await query(
       `INSERT INTO posts
          (id, user_id, pillar_id, type, topic, body, hashtags, status, source, sector_context, created_at, updated_at)
        VALUES
-         (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, 'draft', 'ai_generated', $7, NOW(), NOW())
+         (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, 'draft', $7, $8, NOW(), NOW())
        RETURNING *`,
-      [userId, pillar_id, type, topic, body, hashtags, sector_context]
+      [userId, pillar_id || null, type, postTopic, body, hashtags, source, sector_context]
     );
 
     res.json({ post: insertResult.rows[0] });
+
   } catch (err) {
     console.error('[POST /posts/generate]', err?.response?.data || err.message);
     res.status(500).json({ error: 'Failed to generate post' });
@@ -105,7 +197,9 @@ router.post('/regenerate/:id', requireAuth, async (req, res) => {
     const [profileResult, pillarResult] = await Promise.all([
       query(
         `SELECT full_name, user_role, years_experience, user_headline,
-                sectors, voice_boldness, voice_tone, post_length, style_notes, credentials
+                sectors, companies, countries, achievements,
+                credentials, cv_raw, projects, awards,
+                voice_boldness, voice_tone, post_length, style_notes, location
          FROM profiles WHERE user_id = $1`,
         [userId]
       ),
@@ -116,32 +210,56 @@ router.post('/regenerate/:id', requireAuth, async (req, res) => {
     ]);
 
     const profile = profileResult.rows[0];
-    const pillar = pillarResult.rows[0] || { pillar_name: 'General', description: '', prompt: '' };
+    const pillar  = pillarResult.rows[0] || { pillar_name: 'General', description: '', prompt: '' };
 
-    const systemPrompt = buildSystemPrompt(profile);
-    const userPrompt = buildUserPrompt({
-      profile,
+    const sectors = Array.isArray(profile.sectors)
+      ? profile.sectors.join(', ')
+      : (profile.sectors ? Object.keys(profile.sectors).join(', ') : '');
+
+    const profileContext = [
+      profile.full_name        && `Name: ${profile.full_name}`,
+      profile.user_role        && `Role: ${profile.user_role}`,
+      profile.user_headline    && `Headline: ${profile.user_headline}`,
+      profile.years_experience && `Years of experience: ${profile.years_experience}`,
+      profile.location         && `Location: ${profile.location}`,
+      sectors                  && `Industry sectors: ${sectors}`,
+      profile.companies        && `Companies worked at: ${profile.companies}`,
+      profile.countries        && `Countries worked in: ${profile.countries}`,
+      profile.achievements     && `Achievements: ${profile.achievements}`,
+      profile.credentials      && `Credentials/Certifications: ${profile.credentials}`,
+      profile.projects         && `Notable projects: ${profile.projects}`,
+      profile.awards           && `Awards: ${profile.awards}`,
+      profile.cv_raw           && `CV/Bio excerpt: ${profile.cv_raw.substring(0, 800)}`,
+    ].filter(Boolean).join('\n');
+
+    const systemPrompt = buildSystemPrompt(profile, 'authentic', 'medium', false, profileContext, true);
+    const userPrompt   = buildUserPrompt({
       pillar,
-      topic: post.topic,
-      type: post.type,
+      topic:          post.topic,
+      postTopic:      post.topic,
+      isTrend:        post.source === 'trend',
+      no_personal_claims: false,
+      hasProfileData: profileContext.length > 50,
+      profileContext,
       sector_context: post.sector_context || [],
-      regenerate: true,
+      sectors,
+      regenerate:     true,
     });
 
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
-        model: 'llama-3.3-70b-versatile',
-        max_tokens: 1200,
+        model:       'llama-3.3-70b-versatile',
+        max_tokens:  1200,
         temperature: 0.9, // higher for variation
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
+          { role: 'user',   content: userPrompt   },
         ],
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json',
         },
         timeout: 30000,
@@ -158,6 +276,7 @@ router.post('/regenerate/:id', requireAuth, async (req, res) => {
     );
 
     res.json({ post: updated.rows[0] });
+
   } catch (err) {
     console.error('[POST /posts/regenerate]', err?.response?.data || err.message);
     res.status(500).json({ error: 'Failed to regenerate post' });
@@ -235,17 +354,15 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (!existing.rows.length) return res.status(404).json({ error: 'Post not found' });
 
     const updates = [];
-    const params = [];
+    const params  = [];
 
-    if (body !== undefined) { params.push(body); updates.push(`body = $${params.length}`); }
+    if (body     !== undefined) { params.push(body);     updates.push(`body = $${params.length}`); }
     if (hashtags !== undefined) { params.push(hashtags); updates.push(`hashtags = $${params.length}`); }
-    if (topic !== undefined) { params.push(topic); updates.push(`topic = $${params.length}`); }
-    if (status !== undefined) {
+    if (topic    !== undefined) { params.push(topic);    updates.push(`topic = $${params.length}`); }
+    if (status   !== undefined) {
       params.push(status);
       updates.push(`status = $${params.length}`);
-      if (status === 'approved') {
-        updates.push(`approved_at = NOW()`);
-      }
+      if (status === 'approved') updates.push(`approved_at = NOW()`);
     }
 
     updates.push(`updated_at = NOW()`);
@@ -279,72 +396,106 @@ router.delete('/:id', requireAuth, async (req, res) => {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(profile) {
-  const boldness = profile.voice_boldness || 5;
-  const tone = profile.voice_tone || 'professional';
-  const length = profile.post_length || 'medium';
+function buildSystemPrompt(profile, tone, length, noPersonalClaims, profileContext, hasProfileData) {
+  const boldness   = profile.voice_boldness || 5;
+  const voiceTone  = profile.voice_tone     || tone || 'professional';
+  const postLength = profile.post_length    || length || 'medium';
 
   const lengthGuide = {
-    short: '150–250 words',
-    medium: '250–400 words',
-    long: '400–600 words',
-  }[length] || '250–400 words';
+    short:  '80–120 words',
+    medium: '150–250 words',
+    long:   '300–400 words',
+  }[postLength] || '150–250 words';
 
-  return `You are a world-class LinkedIn ghostwriter for  senior professionals across any industry.
+  const toneGuide = {
+    authentic:    'First person, honest and personal. Real feelings, real moments.',
+    insightful:   'Thought leader. Share analysis, patterns, professional perspective.',
+    storytelling: 'Open with a specific scene or moment. Build tension, reveal the lesson.',
+    educational:  'Practical, actionable knowledge. Examples, clear structure.',
+    motivational: 'Inspire action. Connect professional challenge to broader human truth.',
+  }[tone] || 'First person, honest and authentic.';
 
-AUTHOR CONTEXT:
+  // ── CRITICAL honesty rules — the core of this update ──────────────────
+  const honestyRules = noPersonalClaims ? `
+═══ CRITICAL RULES — MUST FOLLOW ═══
+1. DO NOT write in first person claiming personal experience. The user's profile data does NOT cover this topic.
+2. DO NOT use "I have worked with...", "In my experience...", "I once..." — there is no profile data to support it.
+3. Write as GENERAL THOUGHT LEADERSHIP. Use "we", "many professionals", "teams in this field", etc.
+4. You CAN reference industry trends, research, frameworks, and observations.
+5. NO fake metrics, NO made-up company names, NO invented scenarios.
+6. Better to write a shorter honest post than a longer fabricated one.
+═══════════════════════════════════` : `
+═══ CRITICAL RULES — MUST FOLLOW ═══
+1. ONLY use personal details, companies, achievements, and numbers EXPLICITLY mentioned in the PROFILE DATA below.
+2. DO NOT invent, assume, or hallucinate ANY personal experience, metric, company name, or story.
+3. If the profile does not mention a specific detail, do NOT make it up — omit it or write more generally.
+4. Do NOT say "In my X years..." unless the profile explicitly states the number.
+5. Do NOT name companies the profile does not mention.
+6. A shorter honest post beats a longer fabricated one every time.
+═══════════════════════════════════`;
+
+  return `You are a professional LinkedIn ghostwriter for ${profile.full_name || 'a professional'}.
+
+AUTHOR PROFILE:
 - Name: ${profile.full_name || 'the author'}
 - Role: ${profile.user_role || 'Professional'}
-- Industries / Sectors: ${Array.isArray(profile.sectors) ? profile.sectors.join(', ') : 'general'}
-- Experience: ${profile.years_experience || '10'}+ years
 - Headline: ${profile.user_headline || ''}
+- Experience: ${profile.years_experience || ''}+ years
+- Location: ${profile.location || ''}
+- Sectors: ${Array.isArray(profile.sectors) ? profile.sectors.join(', ') : ''}
 - Credentials: ${profile.credentials || ''}
 
-VOICE SETTINGS:
-- Boldness: ${boldness}/10 (${boldness >= 7 ? 'be direct, bold, take strong stances' : boldness >= 4 ? 'balanced and confident' : 'measured, careful, diplomatic'})
-- Tone: ${tone}
+${honestyRules}
+
+VOICE:
+- Boldness: ${boldness}/10 (${boldness >= 7 ? 'direct, bold, take strong stances' : boldness >= 4 ? 'balanced and confident' : 'measured and diplomatic'})
+- Tone style: ${toneGuide}
 - Style notes: ${profile.style_notes || 'none'}
 
 OUTPUT FORMAT:
-Write a LinkedIn post of ${lengthGuide}.
-End with a blank line then 3–5 relevant hashtags on a single line starting with HASHTAGS:
-Do NOT include any preamble, commentary, or labels — start the post immediately.`;
+- Length: ${lengthGuide}
+- No preamble or commentary — start the post immediately
+- Use line breaks naturally (LinkedIn is read on mobile)
+- End with a blank line then: HASHTAGS: #tag1 #tag2 #tag3 #tag4 #tag5`;
 }
 
-function buildUserPrompt({ profile, pillar, topic, type, sector_context, regenerate }) {
-  const sectors = Array.isArray(profile.sectors)
-    ? profile.sectors.join(', ')
-    : JSON.stringify(profile.sectors || []);
+function buildUserPrompt({ pillar, topic, postTopic, isTrend, no_personal_claims, hasProfileData, profileContext, sector_context, sectors, regenerate }) {
+  const profileSection = hasProfileData && !no_personal_claims
+    ? `\nUSE ONLY THIS PROFILE DATA — do not invent anything beyond it:\n${profileContext}\n`
+    : `\nNo personal profile data available for this topic — write a general professional post without personal claims.\n`;
 
-  return `${regenerate ? 'Write a DIFFERENT version of this LinkedIn post.\n\n' : ''}CONTENT PILLAR: ${pillar.pillar_name}
-PILLAR DESCRIPTION: ${pillar.description || ''}
-PILLAR PROMPT GUIDANCE: ${pillar.prompt || ''}
+  const pillarSection = pillar
+    ? `CONTENT PILLAR: ${pillar.pillar_name}\nPILLAR DESCRIPTION: ${pillar.description || ''}\nPILLAR GUIDANCE: ${pillar.prompt || ''}\n`
+    : '';
 
-TOPIC: ${topic}
-POST TYPE: ${type}
-SECTOR CONTEXT: ${sector_context.length ? sector_context.join(', ') : sectors}
+  const trendNote = isTrend
+    ? `This is a TREND-BASED post. If there is a genuine personal connection in the profile data, use it. If not, write a general insightful take on the trend.\n`
+    : '';
 
-Write the post now:`;
+  return `${regenerate ? 'Write a COMPLETELY DIFFERENT version of this LinkedIn post — different angle, different opening, different structure.\n\n' : ''}${pillarSection}TOPIC: ${postTopic}
+${topic && topic !== postTopic ? `USER DIRECTION: "${topic}"\n` : ''}${trendNote}SECTOR CONTEXT: ${sector_context?.length ? sector_context.join(', ') : sectors || 'general'}
+${profileSection}
+Write the LinkedIn post now:`;
 }
 
 function parsePostResponse(raw) {
   const hashtagMatch = raw.match(/HASHTAGS:\s*(.+)$/m);
   let hashtags = [];
-  let body = raw;
+  let body     = raw;
 
   if (hashtagMatch) {
     hashtags = hashtagMatch[1]
       .split(/\s+/)
-      .map((h) => h.trim())
-      .filter((h) => h.startsWith('#'));
+      .map(h => h.trim())
+      .filter(h => h.startsWith('#'));
     body = raw.slice(0, hashtagMatch.index).trim();
   } else {
-    // Extract inline hashtags from end of post
-    const lines = raw.split('\n');
+    // Fallback: extract inline hashtags from end of post
+    const lines    = raw.split('\n');
     const lastLine = lines[lines.length - 1];
     if (lastLine && lastLine.includes('#')) {
       hashtags = lastLine.match(/#\w+/g) || [];
-      body = lines.slice(0, -1).join('\n').trim();
+      body     = lines.slice(0, -1).join('\n').trim();
     }
   }
 
