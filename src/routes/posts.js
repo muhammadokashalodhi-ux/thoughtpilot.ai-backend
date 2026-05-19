@@ -198,7 +198,7 @@ router.post('/regenerate/:id', requireAuth, async (req, res) => {
       query(
         `SELECT full_name, user_role, years_experience, user_headline,
                 sectors, companies, countries, achievements,
-                credentials, cv_raw, projects, awards,
+                credentials, about_summary, projects, awards,
                 voice_boldness, voice_tone, post_length, style_notes, location
          FROM profiles WHERE user_id = $1`,
         [userId]
@@ -229,7 +229,7 @@ router.post('/regenerate/:id', requireAuth, async (req, res) => {
       profile.credentials      && `Credentials/Certifications: ${profile.credentials}`,
       profile.projects         && `Notable projects: ${profile.projects}`,
       profile.awards           && `Awards: ${profile.awards}`,
-      profile.cv_raw           && `CV/Bio excerpt: ${profile.cv_raw.substring(0, 800)}`,
+      profile.about_summary    && `About / Bio: ${profile.about_summary.substring(0, 800)}`,
     ].filter(Boolean).join('\n');
 
     const systemPrompt = buildSystemPrompt(profile, 'authentic', 'medium', false, profileContext, true);
