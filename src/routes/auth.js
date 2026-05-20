@@ -22,6 +22,17 @@ function sanitizeUser(user) {
   return safe;
 }
 
+// ── Cookie helper ──
+function setAuthCookie(res, token) {
+  res.cookie('tp_token', token, {
+    httpOnly: true,
+    secure:   true,
+    sameSite: 'lax',
+    domain:   '.thoughtpilotai.com',
+    maxAge:   7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+}
+
 // ══════════════════════════════════════════
 // POST /api/auth/signup
 // ══════════════════════════════════════════
@@ -71,6 +82,8 @@ router.post('/signup',
       `, [user.id, full_name]);
 
       const token = generateToken(user.id);
+
+      setAuthCookie(res, token); // ← set subdomain-scoped cookie
 
       console.log(`[Auth] New signup: ${email}`);
 
@@ -131,6 +144,8 @@ router.post('/login',
 
       const token = generateToken(user.id);
 
+      setAuthCookie(res, token); // ← set subdomain-scoped cookie
+
       console.log(`[Auth] Login: ${email}`);
 
       res.json({
@@ -177,7 +192,6 @@ router.get('/me', requireAuth, async (req, res) => {
 
 // ══════════════════════════════════════════
 // POST /api/auth/admin-login
-// Separate admin login using hardcoded password
 // ══════════════════════════════════════════
 router.post('/admin-login',
   authLimiter,
