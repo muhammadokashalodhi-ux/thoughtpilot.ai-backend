@@ -9,10 +9,12 @@
 // them to sign in again.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const express       = require('express');
-const router        = express.Router();
-const { query }     = require('../db');
+const express         = require('express');
+const router          = express.Router();
+const { query }       = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const Groq            = require('groq-sdk');
+const groq            = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // ─── GET /api/career/handoff ──────────────────────────────────────────────────
 // Called by the Career Suite app to get user context from ThoughtPilot token.
@@ -108,6 +110,41 @@ router.get('/status', requireAuth, async (req, res) => {
       version_history: ['beta','pro'].includes(plan),
     },
   });
+});
+
+// POST /api/career/cover-letter
+router.post('/cover-letter', verifyToken, async (req, res) => {
+  try {
+    const { job_description, cv_text, user_name, user_role } = req.body;
+
+    if (!job_description || !cv_text) {
+      return res.status(400).json({ error: 'job_description and cv_text are required' });
+    }
+
+    const systemPrompt = `You are an expert career coach and professional writer.
+Write a compelling, personalised cover letter. Be specific, confident, and concise.
+Use a professional but human tone. 3 paragraphs max. Do NOT use generic phrases like "I am writing to apply".
+Reference specific details from the job description and match them to the candidate's experience.
+Return ONLY the cover letter text — no subject line, no metadata, no preamble.`;
+
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: 1000,
+      temperature: 0.5,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Write a cover letter for ${user_name || 'the applicant'} (${user_role || 'professional'}).\n\nCV:\n${cv_text}\n\nJOB DESCRIPTION:\n${job_description}` },
+      ],
+    });
+
+    const cover_letter = completion.choices[0]?.message?.content?.trim() || '';
+    if (!cover_letter) return res.status(500).json({ error: 'Failed to generate cover letter' });
+
+    return res.json({ cover_letter });
+  } catch (err) {
+    console.error('[career/cover-letter]', err);
+    return res.status(500).json({ error: 'Cover letter generation failed' });
+  }
 });
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
