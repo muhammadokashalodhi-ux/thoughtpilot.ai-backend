@@ -21,6 +21,8 @@ const analyticsRouter     = require('./routes/analytics');
 const notificationsRouter = require('./routes/notifications');
 const settingsRouter      = require('./routes/settings');
 const careerRoutes        = require('./routes/career-suite');
+const webhookRouter       = require('./routes/webhooks');
+const billingRouter       = require('./routes/billing');
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -35,6 +37,7 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
   'https://www.thoughtpilotai.com',
   'https://thoughtpilotai.com',
+  'https://app.thoughtpilotai.com',
   'http://localhost:3000',
   'http://localhost:3001',
 ].filter(Boolean);
@@ -48,6 +51,9 @@ app.use(cors({
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization']
 }));
+
+// ── Paddle webhook  ──
+app.use('/api/webhooks', webhookRouter);
 
 // ── Body parsing ──
 app.use(express.json({ limit: '2mb' }));
@@ -85,6 +91,7 @@ app.use('/api/analytics',     analyticsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings',      settingsRouter);
 app.use('/api/career',        careerRoutes);
+app.use('/api/billing',       billingRouter);
 
 // ── 404 ──
 app.use((req, res) => {

@@ -1,11 +1,12 @@
-const express = require('express');
-const router = express.Router();
-const { query } = require('../db');
+const express         = require('express');
+const router          = express.Router();
+const { query }       = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const axios = require('axios');
+const { checkLimit }  = require('../middleware/plan');
+const axios           = require('axios');
 
 // ─── Generate a post via Groq ────────────────────────────────────────────────
-router.post('/generate', requireAuth, async (req, res) => {
+router.post('/generate', requireAuth, checkLimit('posts_per_month'), async (req, res) => {
   try {
     const userId = req.user.id;
     const {
