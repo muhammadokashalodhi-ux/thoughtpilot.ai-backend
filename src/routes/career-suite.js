@@ -113,7 +113,7 @@ router.get('/status', requireAuth, async (req, res) => {
 });
 
 // POST /api/career/cover-letter
-router.post('/cover-letter', verifyToken, async (req, res) => {
+router.post('/cover-letter', requireAuth, async (req, res) => {
   try {
     const { job_description, cv_text, user_name, user_role } = req.body;
 
