@@ -68,6 +68,60 @@ router.get('/handoff', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/career/analyze-cv
+router.post('/analyze-cv', requireAuth, async (req, res) => {
+  try {
+    const { cv_text } = req.body;
+    if (!cv_text) return res.status(400).json({ error: 'cv_text required' });
+
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 4096,
+        temperature: 0.3,
+        messages: req.body.messages,
+      }),
+    });
+
+    const data = await groqRes.json();
+    res.json(data);
+  } catch (err) {
+    console.error('[career/analyze-cv]', err.message);
+    res.status(500).json({ error: 'Analysis failed' });
+  }
+});
+
+// POST /api/career/analyze-job
+router.post('/analyze-job', requireAuth, async (req, res) => {
+  try {
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 4096,
+        temperature: 0.3,
+        messages: req.body.messages,
+      }),
+    });
+
+    const data = await groqRes.json();
+    res.json(data);
+  } catch (err) {
+    console.error('[career/analyze-job]', err.message);
+    res.status(500).json({ error: 'Job match failed' });
+  }
+});
+
+
 // ─── POST /api/career/save-cv ─────────────────────────────────────────────────
 // Career Suite app saves improved CV back to ThoughtPilot profile.
 router.post('/save-cv', requireAuth, async (req, res) => {
