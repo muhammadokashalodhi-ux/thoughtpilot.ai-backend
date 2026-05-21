@@ -39,6 +39,7 @@ const allowedOrigins = [
   'https://www.thoughtpilotai.com',
   'https://thoughtpilotai.com',
   'https://app.thoughtpilotai.com',
+  'https://careers.thoughtpilotai.com',
   'http://localhost:3000',
   'http://localhost:3001',
 ].filter(Boolean);
