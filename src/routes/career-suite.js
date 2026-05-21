@@ -26,7 +26,7 @@ router.get('/handoff', requireAuth, async (req, res) => {
       SELECT
         u.id, u.email, u.full_name, u.plan, u.is_beta,
         p.user_role, p.sectors, p.location, p.years_experience,
-        p.cv_raw, p.achievements, p.credentials, p.user_headline,
+        p.about_summary, p.achievements, p.credentials, p.user_headline,
         p.companies, p.countries
       FROM users u
       LEFT JOIN profiles p ON p.user_id = u.id
@@ -39,8 +39,8 @@ router.get('/handoff', requireAuth, async (req, res) => {
 
     const user = result.rows[0];
 
-    // Build a pre-filled CV text from profile if cv_raw exists
-    const cvContext = user.cv_raw || buildCVFromProfile(user);
+    // Build a pre-filled CV text from profile if about_summary exists
+    const cvContext = user.about_summary || buildCVFromProfile(user);
 
     res.json({
       user: {
@@ -77,7 +77,7 @@ router.post('/save-cv', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'CV text is required' });
     }
     await query(
-      `UPDATE profiles SET cv_raw = $1, updated_at = NOW() WHERE user_id = $2`,
+      `UPDATE profiles SET about_summary = $1, updated_at = NOW() WHERE user_id = $2`,
       [cv_text.substring(0, 10000), req.user.id]
     );
     res.json({ message: 'CV saved to ThoughtPilot profile' });
