@@ -71,8 +71,7 @@ router.get('/handoff', requireAuth, async (req, res) => {
 // POST /api/career/analyze-cv
 router.post('/analyze-cv', requireAuth, async (req, res) => {
   try {
-    const { cv_text } = req.body;
-    if (!cv_text) return res.status(400).json({ error: 'cv_text required' });
+    if (!req.body.messages) return res.status(400).json({ error: 'messages required' });
 
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
