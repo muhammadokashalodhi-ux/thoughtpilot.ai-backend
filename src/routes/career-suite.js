@@ -1,172 +1,142 @@
-'use strict';
+// career-suite.js — ThoughtPilot Career Suite backend routes
+// Add to your Express app: app.use('/api/career', require('./career-suite'))
 
-// ─────────────────────────────────────────────────────────────────────────────
-// src/routes/career-suite.js
-//
-// This file handles the ThoughtPilot → Career Suite app connection.
-// When the Career Suite app is built, it will call GET /api/career/handoff
-// to verify the user and get their profile context without requiring
-// them to sign in again.
-// ─────────────────────────────────────────────────────────────────────────────
+const express = require('express');
+const router = express.Router();
+const Groq = require('groq-sdk');
 
-const express         = require('express');
-const router          = express.Router();
-const { query }       = require('../db');
-const { requireAuth } = require('../middleware/auth');
-const Groq            = require('groq-sdk');
-const groq            = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// ─── GET /api/career/handoff ──────────────────────────────────────────────────
-// Called by the Career Suite app to get user context from ThoughtPilot token.
-// The Career Suite app passes the tp_token cookie in the request.
-// Returns: user profile context for pre-filling the Career Suite.
-router.get('/handoff', requireAuth, async (req, res) => {
+// ─────────────────────────────────────────────
+// Auth middleware (reuse your existing verifyToken)
+// ─────────────────────────────────────────────
+const verifyToken = require('../middleware/verifyToken'); // adjust path as needed
+
+// ─────────────────────────────────────────────
+// GET /api/career/handoff
+// Returns user profile + cv_prefill text built from profile
+// ─────────────────────────────────────────────
+router.get('/handoff', verifyToken, async (req, res) => {
   try {
-    const result = await query(`
-      SELECT
-        u.id, u.email, u.full_name, u.plan, u.is_beta,
-        p.user_role, p.sectors, p.location, p.years_experience,
-        p.about_summary, p.achievements, p.credentials, p.user_headline,
-        p.companies, p.countries
-      FROM users u
-      LEFT JOIN profiles p ON p.user_id = u.id
-      WHERE u.id = $1
-    `, [req.user.id]);
+    const userId = req.user.id;
+    // Adjust to your DB model — example uses a generic query helper
+    const { db } = require('../db'); // adjust path
 
-    if (!result.rows.length) {
+    const user = await db.query(
+      'SELECT id, email, full_name, plan FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (!user.rows[0]) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const user = result.rows[0];
+    const profile = await db.query(
+      'SELECT * FROM career_profiles WHERE user_id = $1',
+      [userId]
+    );
 
-    // Build a pre-filled CV text from profile if about_summary exists
-    const cvContext = user.about_summary || buildCVFromProfile(user);
+    const u = user.rows[0];
+    const p = profile.rows[0] || {};
 
-    res.json({
+    // Build cv_prefill from profile data
+    const cv_prefill = buildCVFromProfile(u, p);
+
+    return res.json({
       user: {
-        id:          user.id,
-        email:       user.email,
-        full_name:   user.full_name,
-        plan:        user.is_beta ? 'beta' : user.plan,
+        id: u.id,
+        email: u.email,
+        full_name: u.full_name,
+        plan: u.plan || 'free',
       },
       profile: {
-        role:             user.user_role,
-        headline:         user.user_headline,
-        location:         user.location,
-        years_experience: user.years_experience,
-        sectors:          user.sectors,
-        companies:        user.companies,
-        countries:        user.countries,
-        achievements:     user.achievements,
-        credentials:      user.credentials,
+        role: p.role || '',
+        headline: p.headline || '',
+        location: p.location || '',
+        years_experience: p.years_experience || 0,
+        sectors: p.sectors || [],
+        companies: p.companies || [],
+        countries: p.countries || [],
+        achievements: p.achievements || [],
+        credentials: p.credentials || [],
       },
-      cv_prefill: cvContext,
+      cv_prefill,
     });
   } catch (err) {
-    console.error('[career/handoff]', err.message);
-    res.status(500).json({ error: 'Handoff failed' });
+    console.error('[career/handoff]', err);
+    return res.status(500).json({ error: 'Failed to fetch handoff data' });
   }
 });
 
-// POST /api/career/analyze-cv
-router.post('/analyze-cv', requireAuth, async (req, res) => {
-  try {
-    if (!req.body.messages) return res.status(400).json({ error: 'messages required' });
-
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        max_tokens: 4096,
-        temperature: 0.3,
-        messages: req.body.messages,
-      }),
-    });
-
-    const data = await groqRes.json();
-    res.json(data);
-  } catch (err) {
-    console.error('[career/analyze-cv]', err.message);
-    res.status(500).json({ error: 'Analysis failed' });
-  }
-});
-
-// POST /api/career/analyze-job
-router.post('/analyze-job', requireAuth, async (req, res) => {
-  try {
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        max_tokens: 4096,
-        temperature: 0.3,
-        messages: req.body.messages,
-      }),
-    });
-
-    const data = await groqRes.json();
-    res.json(data);
-  } catch (err) {
-    console.error('[career/analyze-job]', err.message);
-    res.status(500).json({ error: 'Job match failed' });
-  }
-});
-
-
-// ─── POST /api/career/save-cv ─────────────────────────────────────────────────
-// Career Suite app saves improved CV back to ThoughtPilot profile.
-router.post('/save-cv', requireAuth, async (req, res) => {
+// ─────────────────────────────────────────────
+// POST /api/career/save-cv
+// Saves improved CV text back to user's profile
+// ─────────────────────────────────────────────
+router.post('/save-cv', verifyToken, async (req, res) => {
   try {
     const { cv_text } = req.body;
-    if (!cv_text || cv_text.trim().length < 50) {
-      return res.status(400).json({ error: 'CV text is required' });
+    const userId = req.user.id;
+
+    if (!cv_text || typeof cv_text !== 'string') {
+      return res.status(400).json({ error: 'cv_text is required' });
     }
-    await query(
-      `UPDATE profiles SET about_summary = $1, updated_at = NOW() WHERE user_id = $2`,
-      [cv_text.substring(0, 10000), req.user.id]
+
+    const { db } = require('../db');
+
+    await db.query(
+      `INSERT INTO career_profiles (user_id, cv_text, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id)
+       DO UPDATE SET cv_text = $2, updated_at = NOW()`,
+      [userId, cv_text]
     );
-    res.json({ message: 'CV saved to ThoughtPilot profile' });
+
+    return res.json({ success: true, message: 'CV saved to profile' });
   } catch (err) {
-    console.error('[career/save-cv]', err.message);
-    res.status(500).json({ error: 'Failed to save CV' });
+    console.error('[career/save-cv]', err);
+    return res.status(500).json({ error: 'Failed to save CV' });
   }
 });
 
-// ─── GET /api/career/status ───────────────────────────────────────────────────
-// Returns whether the Career Suite app is live and what plan features are enabled.
-router.get('/status', requireAuth, async (req, res) => {
-  const plan = req.user.is_beta ? 'beta' : req.user.plan;
+// ─────────────────────────────────────────────
+// GET /api/career/status
+// Returns feature gates based on user plan
+// ─────────────────────────────────────────────
+router.get('/status', verifyToken, async (req, res) => {
+  try {
+    const { db } = require('../db');
+    const user = await db.query(
+      'SELECT plan FROM users WHERE id = $1',
+      [req.user.id]
+    );
 
-  res.json({
-    app_url:     process.env.CAREER_SUITE_URL || 'https://careers.thoughtpilotai.com',
-    is_live:     process.env.CAREER_SUITE_LIVE === 'true',
-    user_plan:   plan,
-    // Feature gates — update these when Stripe is live in Phase 5
-    features: {
-      ats_analysis:  true,              // free
-      job_match:     true,              // free
-      ai_editor:     ['beta','starter','pro'].includes(plan),
-      template_modern:  ['beta','starter','pro'].includes(plan),
-      template_minimal: ['beta','pro'].includes(plan),
-      template_executive: plan === 'pro',
-      template_compact:   plan === 'pro',
-      pdf_export:    true,              // free (classic template)
-      docx_export:   ['beta','starter','pro'].includes(plan),
-      version_history: ['beta','pro'].includes(plan),
-    },
-  });
+    const plan = user.rows[0]?.plan || 'free';
+
+    const gates = {
+      plan,
+      can_use_job_match: ['beta', 'pro', 'executive'].includes(plan),
+      can_use_modern_template: ['beta', 'pro', 'executive'].includes(plan),
+      can_use_minimal_template: ['beta', 'pro', 'executive'].includes(plan),
+      can_use_executive_template: ['pro', 'executive'].includes(plan),
+      can_use_compact_template: ['pro', 'executive'].includes(plan),
+      can_save_to_profile: plan !== 'free',
+      max_analyses_per_day: plan === 'free' ? 3 : plan === 'beta' ? 20 : 100,
+    };
+
+    return res.json(gates);
+  } catch (err) {
+    console.error('[career/status]', err);
+    return res.status(500).json({ error: 'Failed to fetch status' });
+  }
 });
 
-// POST /api/career/cover-letter
-router.post('/cover-letter', requireAuth, async (req, res) => {
+// ─────────────────────────────────────────────
+// POST /api/career/cover-letter  ← NEW ROUTE
+// Generates a cover letter using Groq
+// Body: { job_description, cv_text, user_name, user_role }
+// Returns: { cover_letter: "full cover letter text" }
+// ─────────────────────────────────────────────
+router.post('/cover-letter', verifyToken, async (req, res) => {
   try {
     const { job_description, cv_text, user_name, user_role } = req.body;
 
@@ -180,18 +150,29 @@ Use a professional but human tone. 3 paragraphs max. Do NOT use generic phrases 
 Reference specific details from the job description and match them to the candidate's experience.
 Return ONLY the cover letter text — no subject line, no metadata, no preamble.`;
 
+    const userMessage = `Write a cover letter for ${user_name || 'the applicant'} (${user_role || 'professional'}).
+
+CV:
+${cv_text}
+
+JOB DESCRIPTION:
+${job_description}`;
+
     const completion = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       max_tokens: 1000,
       temperature: 0.5,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Write a cover letter for ${user_name || 'the applicant'} (${user_role || 'professional'}).\n\nCV:\n${cv_text}\n\nJOB DESCRIPTION:\n${job_description}` },
+        { role: 'user', content: userMessage },
       ],
     });
 
     const cover_letter = completion.choices[0]?.message?.content?.trim() || '';
-    if (!cover_letter) return res.status(500).json({ error: 'Failed to generate cover letter' });
+
+    if (!cover_letter) {
+      return res.status(500).json({ error: 'Failed to generate cover letter' });
+    }
 
     return res.json({ cover_letter });
   } catch (err) {
@@ -200,21 +181,51 @@ Return ONLY the cover letter text — no subject line, no metadata, no preamble.
   }
 });
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
-function buildCVFromProfile(p) {
-  const parts = [];
-  if (p.full_name)        parts.push(`NAME: ${p.full_name}`);
-  if (p.user_role)        parts.push(`ROLE: ${p.user_role}`);
-  if (p.user_headline)    parts.push(`HEADLINE: ${p.user_headline}`);
-  if (p.location)         parts.push(`LOCATION: ${p.location}`);
-  if (p.years_experience) parts.push(`YEARS EXPERIENCE: ${p.years_experience}`);
-  if (p.achievements)     parts.push(`\nACHIEVEMENTS:\n${p.achievements}`);
-  if (p.credentials)      parts.push(`\nCREDENTIALS:\n${p.credentials}`);
-  if (p.companies)        parts.push(`\nCOMPANIES: ${p.companies}`);
-  if (p.countries)        parts.push(`\nCOUNTRIES: ${p.countries}`);
-  const sectors = Array.isArray(p.sectors) ? p.sectors.join(', ') : '';
-  if (sectors)            parts.push(`\nSECTORS: ${sectors}`);
-  return parts.join('\n');
+// ─────────────────────────────────────────────
+// Helper: build CV text from ThoughtPilot profile
+// ─────────────────────────────────────────────
+function buildCVFromProfile(user, profile) {
+  const lines = [];
+
+  lines.push(user.full_name || 'Your Name');
+  if (profile.role) lines.push(profile.role);
+  if (profile.location) lines.push(profile.location);
+  if (user.email) lines.push(user.email);
+  lines.push('');
+
+  if (profile.headline) {
+    lines.push('PROFESSIONAL SUMMARY');
+    lines.push(profile.headline);
+    lines.push('');
+  }
+
+  if (profile.achievements?.length > 0) {
+    lines.push('KEY ACHIEVEMENTS');
+    profile.achievements.forEach((a) => lines.push(`• ${a}`));
+    lines.push('');
+  }
+
+  if (profile.companies?.length > 0) {
+    lines.push('EXPERIENCE');
+    profile.companies.forEach((c, i) => {
+      lines.push(`${profile.role || 'Professional'} — ${c}`);
+      if (profile.sectors?.[i]) lines.push(`Sector: ${profile.sectors[i]}`);
+    });
+    lines.push('');
+  }
+
+  if (profile.credentials?.length > 0) {
+    lines.push('EDUCATION & CREDENTIALS');
+    profile.credentials.forEach((c) => lines.push(`• ${c}`));
+    lines.push('');
+  }
+
+  if (profile.countries?.length > 0) {
+    lines.push('INTERNATIONAL EXPERIENCE');
+    lines.push(profile.countries.join(', '));
+  }
+
+  return lines.join('\n');
 }
 
 module.exports = router;
