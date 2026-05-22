@@ -82,7 +82,7 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
         max_tokens: 4096,
-        temperature: 0.3,
+        temperature: 0.1,
         messages: req.body.messages,
       }),
     });
@@ -107,7 +107,7 @@ router.post('/analyze-job', requireAuth, async (req, res) => {
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
         max_tokens: 4096,
-        temperature: 0.3,
+        temperature: 0.1,
         messages: req.body.messages,
       }),
     });
