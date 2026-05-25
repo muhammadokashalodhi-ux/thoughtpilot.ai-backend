@@ -329,7 +329,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
     const result = await query(
-      `SELECT p.*, pi.pillar_name, pi.pillar_icon
+      `SELECT p.*, p.author_comment, pi.pillar_name, pi.pillar_icon
        FROM posts p LEFT JOIN pillars pi ON pi.id = p.pillar_id
        WHERE p.id = $1 AND p.user_id = $2`,
       [id, userId]
@@ -346,7 +346,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
     const { id } = req.params;
-    const { body, hashtags, status, topic } = req.body;
+    const { body, hashtags, status, topic, author_comment } = req.body;
 
     const existing = await query(
       `SELECT * FROM posts WHERE id = $1 AND user_id = $2`,
@@ -357,9 +357,10 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const updates = [];
     const params  = [];
 
-    if (body     !== undefined) { params.push(body);     updates.push(`body = $${params.length}`); }
-    if (hashtags !== undefined) { params.push(hashtags); updates.push(`hashtags = $${params.length}`); }
-    if (topic    !== undefined) { params.push(topic);    updates.push(`topic = $${params.length}`); }
+    if (body           !== undefined) { params.push(body);           updates.push(`body = $${params.length}`); }
+    if (hashtags       !== undefined) { params.push(hashtags);       updates.push(`hashtags = $${params.length}`); }
+    if (topic          !== undefined) { params.push(topic);          updates.push(`topic = $${params.length}`); }
+    if (author_comment !== undefined) { params.push(author_comment); updates.push(`author_comment = $${params.length}`); }
     if (status   !== undefined) {
       params.push(status);
       updates.push(`status = $${params.length}`);
