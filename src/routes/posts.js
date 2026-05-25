@@ -503,4 +503,129 @@ function parsePostResponse(raw) {
   return { body, hashtags };
 }
 
+// ─── Generate hook alternatives for a post ───────────────────────────────────
+router.post('/generate-hooks', requireAuth, async (req, res) => {
+  try {
+    const { post_body } = req.body;
+    if (!post_body || !post_body.trim()) {
+      return res.status(400).json({ error: 'post_body is required' });
+    }
+
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:       'llama-3.1-8b-instant',
+        max_tokens:  600,
+        temperature: 0.85,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a LinkedIn hook writer. Generate 4 alternative opening lines (hooks) for a LinkedIn post.
+Each hook must be attention-grabbing, punchy, and under 20 words.
+Use a different style for each: Question, Bold Statement, Contrarian, and Story/Scene.
+
+Respond ONLY in this exact JSON format — no preamble, no markdown, no extra text:
+[
+  { "style": "Question", "text": "..." },
+  { "style": "Bold Statement", "text": "..." },
+  { "style": "Contrarian", "text": "..." },
+  { "style": "Story/Scene", "text": "..." }
+]`,
+          },
+          {
+            role: 'user',
+            content: `Here is the LinkedIn post. Generate 4 alternative opening hooks for it:\n\n${post_body.substring(0, 1500)}`,
+          },
+        ],
+      },
+      {
+        headers: {
+          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 20000,
+      }
+    );
+
+    const raw = groqRes.data.choices[0].message.content.trim();
+
+    let hooks = [];
+    try {
+      const clean = raw.replace(/```json|```/g, '').trim();
+      hooks = JSON.parse(clean);
+    } catch {
+      // Fallback: return empty hooks rather than crashing
+      return res.status(500).json({ error: 'Failed to parse hook response' });
+    }
+
+    res.json({ hooks });
+  } catch (err) {
+    console.error('[POST /posts/generate-hooks]', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to generate hooks' });
+  }
+});
+
+// ─── Generate author comment for a post ──────────────────────────────────────
+router.post('/generate-author-comment', requireAuth, async (req, res) => {
+  try {
+    const userId     = req.user.id;
+    const { post_body } = req.body;
+
+    if (!post_body || !post_body.trim()) {
+      return res.status(400).json({ error: 'post_body is required' });
+    }
+
+    // Load profile for personalisation
+    const profileResult = await query(
+      `SELECT full_name, user_role, years_experience, user_headline, sectors
+       FROM profiles WHERE user_id = $1`,
+      [userId]
+    );
+    const profile = profileResult.rows[0] || {};
+
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:       'llama-3.1-8b-instant',
+        max_tokens:  300,
+        temperature: 0.75,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a LinkedIn strategy expert. Write a first author comment that the post author should post immediately under their own LinkedIn post to boost reach and engagement.
+
+The comment should:
+- Add a key insight, behind-the-scenes detail, or personal thought NOT already in the post
+- Be 2–4 sentences max
+- Feel natural, not promotional
+- Invite engagement (e.g. end with a question or "curious what you think")
+- NOT start with "Great post" or self-congratulatory phrases
+
+Author: ${profile.full_name || 'the author'}, ${profile.user_role || 'professional'}
+
+Respond with ONLY the comment text — no quotes, no labels, no explanation.`,
+          },
+          {
+            role: 'user',
+            content: `Write the author comment for this LinkedIn post:\n\n${post_body.substring(0, 1500)}`,
+          },
+        ],
+      },
+      {
+        headers: {
+          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 20000,
+      }
+    );
+
+    const comment = groqRes.data.choices[0].message.content.trim();
+    res.json({ comment });
+  } catch (err) {
+    console.error('[POST /posts/generate-author-comment]', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to generate author comment' });
+  }
+});
+
 module.exports = router;
