@@ -1,23 +1,72 @@
 // src/cron/scheduler.js
-// Runs every hour at :00
-// For each user: checks if today's calendar slot matches the current UTC hour
-// Sends WA + email notification: "Your post for today is ready to generate/review"
-// Uses profiles.post_schedule JSONB for per-day posting times
-// Falls back to 9:00 AM UTC if no schedule is set
+// Runs every 30 minutes
+// For each user: checks if today has a calendar entry AND current UTC time
+// matches their post_time + timezone. Sends notification if so.
 
-const cron   = require('node-cron');
+const cron      = require('node-cron');
 const { query } = require('../db/index');
 const { sendNotification } = require('../utils/notify');
 
-// ─── Build notification content ────────────────────────────────────────────
+// ─── Convert "HH:MM" + timezone → UTC hour+minute ─────────────────────────
+
+function localTimeToUTC(timeStr, timezone) {
+  try {
+    // timeStr = "19:30", timezone = "Asia/Dubai"
+    const [h, m] = timeStr.split(':').map(Number);
+    // Build a date string for today in that timezone at that time
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    // Use Intl to find the UTC offset for this timezone right now
+    const localDate = new Date(`${dateStr}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`);
+    // Get what that local time is in the given timezone by formatting UTC
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    // Find offset: format current UTC time in the timezone, compare
+    const utcNow   = new Date();
+    const tzParts  = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).formatToParts(utcNow);
+
+    const tzH = parseInt(tzParts.find(p => p.type === 'hour').value);
+    const tzM = parseInt(tzParts.find(p => p.type === 'minute').value);
+    const utcH = utcNow.getUTCHours();
+    const utcM = utcNow.getUTCMinutes();
+
+    // offset in minutes = local - utc
+    let offsetMins = (tzH * 60 + tzM) - (utcH * 60 + utcM);
+    // Normalize to [-720, 720]
+    if (offsetMins > 720)  offsetMins -= 1440;
+    if (offsetMins < -720) offsetMins += 1440;
+
+    // Convert desired local time to UTC
+    let utcTotalMins = (h * 60 + m) - offsetMins;
+    // Normalize
+    utcTotalMins = ((utcTotalMins % 1440) + 1440) % 1440;
+
+    return {
+      utcHour: Math.floor(utcTotalMins / 60),
+      utcMin:  utcTotalMins % 60,
+    };
+  } catch {
+    // Fallback: treat as UTC
+    const [h, m] = timeStr.split(':').map(Number);
+    return { utcHour: h, utcMin: m };
+  }
+}
+
+// ─── Notification builders ─────────────────────────────────────────────────
 
 function buildMessage({ fullName, dayName, topic }) {
   return (
     `📅 *ThoughtPilot — Post Reminder*\n\n` +
     `Hi ${fullName || 'there'}! Today is *${dayName}* — time to create your LinkedIn post.\n\n` +
     `*Today's Topic:* ${topic || 'Check your calendar'}\n\n` +
-    `Review your calendar and generate your post now:\n` +
-    `👉 https://thoughtpilotai.com/dashboard/calendar`
+    `Generate your post now:\n` +
+    `👉 https://thoughtpilotai.com/dashboard/generate`
   );
 }
 
@@ -56,33 +105,28 @@ function buildEmailHtml({ fullName, dayName, topic }) {
   `;
 }
 
-// ─── Get today's day name in UTC ────────────────────────────────────────────
-
 function getTodayDayName() {
-  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  return days[new Date().getUTCDay()];
+  return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getUTCDay()];
 }
 
-// ─── Core scheduler logic ───────────────────────────────────────────────────
+// ─── Core logic ────────────────────────────────────────────────────────────
 
 async function runScheduler() {
-  const now         = new Date();
-  const currentHour = now.getUTCHours();
-  const currentMin  = now.getUTCMinutes();
-  const todayName   = getTodayDayName();
+  const now        = new Date();
+  const utcHour    = now.getUTCHours();
+  const utcMin     = now.getUTCMinutes();
+  const todayName  = getTodayDayName();
 
-  // Safety guard — only run in first 5 min of the hour
-  if (currentMin > 5) return;
-
-  console.log(`[scheduler] ⏰ Running at UTC ${currentHour}:${String(currentMin).padStart(2,'0')} — ${todayName}`);
+  console.log(`[scheduler] ⏰ ${todayName} UTC ${String(utcHour).padStart(2,'0')}:${String(utcMin).padStart(2,'0')}`);
 
   try {
-    // Fetch all active users with notifications on who have a calendar entry for today
-    // FIX 1: use u.email as the recipient — not profile.email_from
-    // FIX 2: no scheduled_for or source='calendar' dependency — just match today's day_name
-    // FIX 3: removed p.auto_schedule and p.post_time (don't exist in schema)
-    //        use post_schedule JSONB instead — falls back to hour 9 if not set
-    const { rows: dueUsers } = await query(
+    // Fetch all active users with:
+    // - notifications enabled
+    // - a calendar entry for today with a topic
+    // - post_time set (falls back to '09:00')
+    // - timezone set (falls back to 'UTC')
+    // SELECT u.email as the recipient — not profile.email_from
+    const { rows: users } = await query(
       `SELECT
          u.id          AS user_id,
          u.email,
@@ -91,13 +135,14 @@ async function runScheduler() {
          p.wa_apikey,
          p.wa_notifications,
          p.email_notifications,
-         p.post_schedule,
+         COALESCE(p.post_time, '09:00')   AS post_time,
+         COALESCE(p.timezone,  'UTC')     AS timezone,
+         COALESCE(p.notification_email, u.email) AS notif_email,
          cal.topic,
          cal.theme,
-         cal.post_type,
          cal.day_name
        FROM users u
-       JOIN profiles p  ON p.user_id = u.id
+       JOIN profiles p ON p.user_id = u.id
        JOIN calendar cal
          ON cal.user_id = u.id
         AND cal.day_name = $1
@@ -110,89 +155,71 @@ async function runScheduler() {
       [todayName]
     );
 
-    if (dueUsers.length === 0) {
-      console.log(`[scheduler] No calendar entries for ${todayName} — nothing to notify`);
+    if (users.length === 0) {
+      console.log(`[scheduler] No calendar entries for ${todayName}`);
       return;
     }
 
-    console.log(`[scheduler] Found ${dueUsers.length} user(s) with posts planned for ${todayName}`);
-
-    for (const user of dueUsers) {
+    for (const user of users) {
       try {
-        // Determine this user's preferred posting hour from post_schedule JSONB
-        // post_schedule shape: { "Monday": 9, "Wednesday": 12, "Friday": 17 } (UTC hours)
-        // Default to 9 if not set
-        let preferredHour = 9;
-        if (user.post_schedule && typeof user.post_schedule === 'object') {
-          const h = user.post_schedule[todayName];
-          if (typeof h === 'number') preferredHour = h;
+        // Convert their local post_time to UTC and check if now matches (within 30 min window)
+        const { utcHour: targetH, utcMin: targetM } = localTimeToUTC(user.post_time, user.timezone);
+        const targetTotalMins  = targetH * 60 + targetM;
+        const currentTotalMins = utcHour * 60 + utcMin;
+
+        // Match within a 30-minute window (cron runs every 30 min)
+        const diff = Math.abs(currentTotalMins - targetTotalMins);
+        const withinWindow = diff <= 30 || diff >= (1440 - 30); // handle midnight wrap
+
+        if (!withinWindow) {
+          console.log(`[scheduler] User ${user.user_id}: post_time ${user.post_time} ${user.timezone} → UTC ${targetH}:${String(targetM).padStart(2,'0')} — not now (current UTC ${utcHour}:${String(utcMin).padStart(2,'0')})`);
+          continue;
         }
 
-        // Only notify at the user's preferred hour
-        if (currentHour !== preferredHour) continue;
-
-        // Check we haven't already notified this user today for this type
-        const { rows: recentLog } = await query(
+        // Deduplicate — don't notify twice today
+        const { rows: alreadySent } = await query(
           `SELECT id FROM notification_log
-           WHERE user_id = $1
-             AND type = 'scheduled_post'
-             AND sent_at >= CURRENT_DATE
+           WHERE user_id = $1 AND type = 'scheduled_post' AND sent_at >= CURRENT_DATE
            LIMIT 1`,
           [user.user_id]
         );
-        if (recentLog.length > 0) {
-          console.log(`[scheduler] Already notified user ${user.user_id} today — skipping`);
+        if (alreadySent.length > 0) {
+          console.log(`[scheduler] Already notified user ${user.user_id} today`);
           continue;
         }
 
         const topic = user.topic || user.theme || 'Your planned post';
 
-        const message = buildMessage({
-          fullName: user.full_name,
-          dayName:  todayName,
-          topic,
-        });
-
-        const html = buildEmailHtml({
-          fullName: user.full_name,
-          dayName:  todayName,
-          topic,
-        });
-
-        // FIX: pass user.email as profile.email so notify.js sends to the right address
         await sendNotification({
           userId:  user.user_id,
           type:    'scheduled_post',
           subject: `📅 Time to post on LinkedIn — ${topic}`,
-          message,
-          html,
+          message: buildMessage({ fullName: user.full_name, dayName: todayName, topic }),
+          html:    buildEmailHtml({ fullName: user.full_name, dayName: todayName, topic }),
           profile: {
             wa_notifications:    user.wa_notifications,
             wa_phone:            user.wa_phone,
             wa_apikey:           user.wa_apikey,
             email_notifications: user.email_notifications,
-            email:               user.email,   // ← users.email — the real recipient
+            email:               user.notif_email, // notification_email or users.email
           },
         });
 
-        console.log(`[scheduler] ✅ Notified user ${user.user_id} for ${todayName} — topic: ${topic}`);
-      } catch (userErr) {
-        console.error(`[scheduler] ❌ Failed for user ${user.user_id}:`, userErr.message);
+        console.log(`[scheduler] ✅ Notified user ${user.user_id} — ${topic}`);
+      } catch (e) {
+        console.error(`[scheduler] ❌ user ${user.user_id}:`, e.message);
       }
     }
   } catch (err) {
-    console.error('[scheduler] ❌ Fatal error:', err.message);
+    console.error('[scheduler] ❌ Fatal:', err.message);
   }
 }
 
-// ─── Register cron ─────────────────────────────────────────────────────────
+// ─── Register cron — every 30 minutes ──────────────────────────────────────
 
 function startScheduler() {
-  // Every hour at :00 exactly
-  cron.schedule('0 * * * *', () => {
-    runScheduler();
-  });
-  console.log('[scheduler] 🟢 Post scheduler cron registered (every hour at :00)');
+  cron.schedule('0,30 * * * *', () => { runScheduler(); });
+  console.log('[scheduler] 🟢 Post scheduler cron registered (every 30 min)');
 }
 
 module.exports = { startScheduler, runScheduler };
