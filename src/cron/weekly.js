@@ -152,6 +152,9 @@ function buildDigestHtml({ fullName, nextWeekDays, publishedCount, zeroActivity,
       <div style="padding:32px 24px;">
         <p style="color:#cbd5e1;font-size:16px;margin:0 0 20px;">Hi <strong>${fullName || 'there'}</strong> 👋</p>
         ${warningBanner}
+        <div style="background:#1e2130;border-left:4px solid #3b82f6;border-radius:6px;padding:14px 18px;margin-bottom:20px;">
+          <p style="color:#93c5fd;margin:0;font-size:14px;">⚙️ <strong>Action needed:</strong> Open each day in your calendar and set the <strong>Personal Experience</strong> toggle ON or OFF. Posts will be auto-generated at your set time using your preference.</p>
+        </div>
         <h2 style="color:#e2e8f0;font-size:16px;font-weight:600;margin:0 0 12px;">📅 Next Week's Plan</h2>
         <table style="width:100%;border-collapse:collapse;background:#1e2130;border-radius:8px;overflow:hidden;margin-bottom:24px;">
           <thead>
@@ -166,11 +169,11 @@ function buildDigestHtml({ fullName, nextWeekDays, publishedCount, zeroActivity,
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;">
           <a href="https://app.thoughtpilotai.com/dashboard/calendar"
              style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;">
-            View Calendar →
+            Review Calendar →
           </a>
-          <a href="https://app.thoughtpilotai.com/dashboard/generate"
+          <a href="https://app.thoughtpilotai.com/dashboard/queue"
              style="display:inline-block;background:#1e2130;border:1px solid #2d3348;color:#94a3b8;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;">
-            Generate Posts →
+            Approval Queue →
           </a>
         </div>
         <p style="color:#475569;font-size:12px;margin:0;">

@@ -13,7 +13,7 @@ router.get('/', requireAuth, async (req, res) => {
 
     const [calResult, pillarsResult] = await Promise.all([
       query(
-        `SELECT * FROM calendar WHERE user_id = $1 AND week_start_date = $2 ORDER BY
+        `SELECT *, personal_experience FROM calendar WHERE user_id = $1 AND week_start_date = $2 ORDER BY
           CASE day_name WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
             WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7 END`,
         [userId, weekStartStr]
@@ -116,17 +116,29 @@ Create a varied strategic weekly plan. Rotate pillars. Mix post types.`,
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { theme, topic, category, post_type, custom_override } = req.body;
+    const { theme, topic, category, post_type, custom_override, personal_experience } = req.body;
 
     const existing = await query(`SELECT id FROM calendar WHERE id = $1 AND user_id = $2`, [req.params.id, userId]);
     if (!existing.rows.length) return res.status(404).json({ error: 'Calendar entry not found' });
 
+    const updates = [];
+    const params  = [];
+    const add = (col, val) => {
+      if (val !== undefined) { params.push(val); updates.push(`${col} = $${params.length}`); }
+    };
+    add('theme',               theme);
+    add('topic',               topic);
+    add('category',            category);
+    add('post_type',           post_type);
+    add('custom_override',     custom_override);
+    add('personal_experience', personal_experience);
+
+    if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
+    params.push(req.params.id, userId);
+
     const result = await query(
-      `UPDATE calendar SET theme = COALESCE($1, theme), topic = COALESCE($2, topic),
-       category = COALESCE($3, category), post_type = COALESCE($4, post_type),
-       custom_override = COALESCE($5, custom_override)
-       WHERE id = $6 AND user_id = $7 RETURNING *`,
-      [theme, topic, category, post_type, custom_override, req.params.id, userId]
+      `UPDATE calendar SET ${updates.join(', ')} WHERE id = $${params.length - 1} AND user_id = $${params.length} RETURNING *`,
+      params
     );
 
     res.json({ day: result.rows[0] });
