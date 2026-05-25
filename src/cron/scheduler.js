@@ -147,7 +147,7 @@ async function runScheduler() {
          ON cal.user_id = u.id
         AND cal.day_name = $1
         AND cal.week_start_date = (
-              DATE_TRUNC('week', CURRENT_DATE + INTERVAL '1 day') - INTERVAL '1 day'
+              DATE_TRUNC('week', CURRENT_DATE)
             )::date
        WHERE u.is_active = true
          AND cal.topic IS NOT NULL
