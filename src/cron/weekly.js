@@ -2,7 +2,7 @@
 // Runs every Sunday at 8:00 PM UTC
 // For each active user:
 //   1. Check this week's post activity
-//   2. Auto-generate next week's calendar (if auto_schedule = true)
+//   2. Auto-generate next week's calendar (always — every user gets a fresh plan)
 //   3. Send WA + email digest with next week preview + activity warnings
 
 const cron = require('node-cron');
@@ -10,7 +10,7 @@ const axios = require('axios');
 const { query } = require('../db/index');
 const { sendNotification } = require('../utils/notify');
 
-// ─── Calendar generator (reused from calendar route logic) ────────────────────
+// ─── Calendar generator ────────────────────────────────────────────────────
 
 async function generateCalendarForUser(userId, weekStartStr, profile, pillars) {
   const pillarList = pillars.map((p, i) => `${i + 1}. ${p.pillar_icon} ${p.pillar_name}: ${p.description}`).join('\n');
@@ -41,21 +41,23 @@ Create a varied strategic weekly plan. Rotate pillars. Mix post types.`,
         },
       ],
     },
-    { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+    {
+      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      timeout: 30000,
+    }
   );
 
   let plan;
   try {
     plan = JSON.parse(groqRes.data.choices[0].message.content.trim().replace(/```json|```/g, '')).plan;
   } catch {
-    throw new Error('Failed to parse Groq response');
+    throw new Error('Failed to parse Groq calendar response');
   }
 
-  // Delete existing next week and reinsert
   await query(`DELETE FROM calendar WHERE user_id = $1 AND week_start_date = $2`, [userId, weekStartStr]);
 
-  const ALL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const planMap = {};
+  const ALL_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  const planMap  = {};
   plan.forEach((p) => { planMap[p.day_name] = p; });
 
   const results = await Promise.all(
@@ -72,11 +74,11 @@ Create a varied strategic weekly plan. Rotate pillars. Mix post types.`,
   return results.map((r) => r.rows[0]).filter((d) => d.topic);
 }
 
-// ─── Get next Monday date string ──────────────────────────────────────────────
+// ─── Date helpers ──────────────────────────────────────────────────────────
 
 function getNextMondayStr() {
-  const d = new Date();
-  const day = d.getUTCDay(); // 0=Sun
+  const d   = new Date();
+  const day = d.getUTCDay();
   const daysUntilMonday = day === 0 ? 1 : 8 - day;
   d.setUTCDate(d.getUTCDate() + daysUntilMonday);
   d.setUTCHours(0, 0, 0, 0);
@@ -84,7 +86,7 @@ function getNextMondayStr() {
 }
 
 function getThisMondayStr() {
-  const d = new Date();
+  const d   = new Date();
   const day = d.getUTCDay();
   const diff = day === 0 ? -6 : 1 - day;
   d.setUTCDate(d.getUTCDate() + diff);
@@ -92,7 +94,7 @@ function getThisMondayStr() {
   return d.toISOString().split('T')[0];
 }
 
-// ─── Build notification content ────────────────────────────────────────────────
+// ─── Notification content builders ────────────────────────────────────────
 
 function buildDigestMessage({ fullName, nextWeekDays, publishedCount, zeroActivity, lowActivity }) {
   let msg = `📋 *ThoughtPilot — Weekly Digest*\n\nHi ${fullName || 'there'}!\n\n`;
@@ -101,10 +103,12 @@ function buildDigestMessage({ fullName, nextWeekDays, publishedCount, zeroActivi
     msg += `💡 *You haven't generated any posts in 3+ days.* Jump back in and keep your LinkedIn presence active!\n\n`;
   } else if (lowActivity) {
     msg += `⚠️ *This week you published ${publishedCount} post${publishedCount === 1 ? '' : 's'} — aim for at least 3 to stay visible.*\n\n`;
+  } else {
+    msg += `✅ *Great week! You published ${publishedCount} post${publishedCount === 1 ? '' : 's'} this week.*\n\n`;
   }
 
   if (nextWeekDays.length) {
-    msg += `📅 *Next Week's Plan:*\n`;
+    msg += `📅 *Next Week's Plan (auto-generated):*\n`;
     nextWeekDays.forEach((d) => {
       msg += `• *${d.day_name}:* ${d.topic || d.theme || 'Rest day'}\n`;
     });
@@ -118,13 +122,15 @@ function buildDigestMessage({ fullName, nextWeekDays, publishedCount, zeroActivi
 function buildDigestHtml({ fullName, nextWeekDays, publishedCount, zeroActivity, lowActivity }) {
   const warningBanner = zeroActivity
     ? `<div style="background:#1e1a2e;border-left:4px solid #8b5cf6;border-radius:6px;padding:14px 18px;margin-bottom:20px;">
-        <p style="color:#c4b5fd;margin:0;font-size:14px;">💡 <strong>You haven't generated any posts in 3+ days.</strong> Keep your LinkedIn presence active — consistency is key!</p>
+        <p style="color:#c4b5fd;margin:0;font-size:14px;">💡 <strong>You haven't generated any posts in 3+ days.</strong> Keep your LinkedIn presence active!</p>
        </div>`
     : lowActivity
     ? `<div style="background:#1e1a10;border-left:4px solid #f59e0b;border-radius:6px;padding:14px 18px;margin-bottom:20px;">
         <p style="color:#fcd34d;margin:0;font-size:14px;">⚠️ <strong>Only ${publishedCount} post${publishedCount === 1 ? '' : 's'} this week.</strong> Aim for at least 3 to stay visible on LinkedIn.</p>
        </div>`
-    : '';
+    : `<div style="background:#0d1f0d;border-left:4px solid #22c55e;border-radius:6px;padding:14px 18px;margin-bottom:20px;">
+        <p style="color:#86efac;margin:0;font-size:14px;">✅ <strong>Great week!</strong> You published ${publishedCount} post${publishedCount === 1 ? '' : 's'} this week. Keep it up!</p>
+       </div>`;
 
   const calendarRows = nextWeekDays.length
     ? nextWeekDays.map((d) => `
@@ -135,7 +141,7 @@ function buildDigestHtml({ fullName, nextWeekDays, publishedCount, zeroActivity,
             ${d.topic ? `<span style="background:#1e3a5f;color:#60a5fa;font-size:11px;padding:2px 8px;border-radius:4px;">${d.post_type || 'post'}</span>` : ''}
           </td>
         </tr>`).join('')
-    : `<tr><td colspan="3" style="padding:16px;color:#475569;text-align:center;font-size:13px;">No calendar generated yet for next week.</td></tr>`;
+    : `<tr><td colspan="3" style="padding:16px;color:#475569;text-align:center;font-size:13px;">No calendar for next week yet.</td></tr>`;
 
   return `
     <div style="font-family:'DM Sans',Arial,sans-serif;max-width:600px;margin:0 auto;background:#0f1117;color:#e2e8f0;border-radius:12px;overflow:hidden;">
@@ -162,9 +168,9 @@ function buildDigestHtml({ fullName, nextWeekDays, publishedCount, zeroActivity,
              style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;">
             View Calendar →
           </a>
-          <a href="https://thoughtpilotai.com/dashboard/trends"
+          <a href="https://thoughtpilotai.com/dashboard/generate"
              style="display:inline-block;background:#1e2130;border:1px solid #2d3348;color:#94a3b8;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;">
-            Browse Trends →
+            Generate Posts →
           </a>
         </div>
         <p style="color:#475569;font-size:12px;margin:0;">
@@ -175,7 +181,7 @@ function buildDigestHtml({ fullName, nextWeekDays, publishedCount, zeroActivity,
     </div>`;
 }
 
-// ─── Main weekly job ──────────────────────────────────────────────────────────
+// ─── Main weekly job ───────────────────────────────────────────────────────
 
 async function runWeeklyJob() {
   console.log(`[weekly] 🗓️  Running Sunday weekly job at ${new Date().toISOString()}`);
@@ -184,15 +190,18 @@ async function runWeeklyJob() {
   const thisWeekStr = getThisMondayStr();
 
   try {
-    // Fetch all active users who have at least one notification channel enabled
+    // FIX: removed p.auto_schedule and p.post_time (not in schema)
+    // FIX: added u.email as recipient for email notifications
     const { rows: users } = await query(
       `SELECT
-         u.id AS user_id,
+         u.id          AS user_id,
+         u.email,
          COALESCE(p.full_name, u.full_name) AS full_name,
-         p.wa_phone, p.wa_apikey,
-         p.wa_notifications, p.email_notifications, p.email_from,
-         p.auto_schedule, p.sectors, p.user_role, p.voice_tone,
-         p.post_length, p.voice_boldness, p.style_notes, p.post_time
+         p.wa_phone,    p.wa_apikey,
+         p.wa_notifications, p.email_notifications,
+         p.sectors,     p.user_role,
+         p.voice_tone,  p.post_length,
+         p.voice_boldness, p.style_notes
        FROM users u
        JOIN profiles p ON p.user_id = u.id
        WHERE u.is_active = true
@@ -203,82 +212,75 @@ async function runWeeklyJob() {
 
     for (const user of users) {
       try {
-        // 1. Count posts published this week
+        // 1. Count posts generated this week
         const { rows: activityRows } = await query(
-          `SELECT COUNT(*) AS cnt,
-                  MAX(created_at) AS last_generated
+          `SELECT COUNT(*) AS cnt, MAX(created_at) AS last_generated
            FROM posts
            WHERE user_id = $1 AND created_at >= $2`,
           [user.user_id, thisWeekStr]
         );
-        const publishedCount = parseInt(activityRows[0]?.cnt || 0);
-        const lastGenerated = activityRows[0]?.last_generated;
-
+        const publishedCount  = parseInt(activityRows[0]?.cnt || 0);
+        const lastGenerated   = activityRows[0]?.last_generated;
         const daysSinceLastPost = lastGenerated
           ? Math.floor((Date.now() - new Date(lastGenerated).getTime()) / (1000 * 60 * 60 * 24))
           : 999;
 
         const zeroActivity = daysSinceLastPost >= 3;
-        const lowActivity = !zeroActivity && publishedCount < 3;
+        const lowActivity  = !zeroActivity && publishedCount < 3;
 
-        // 2. Auto-generate next week's calendar if enabled
+        // 2. Always auto-generate next week's calendar for every active user
         let nextWeekDays = [];
-
-        if (user.auto_schedule) {
-          try {
-            const { rows: pillars } = await query(
-              `SELECT pillar_name, pillar_icon, description FROM pillars
-               WHERE user_id = $1 AND is_active = true ORDER BY display_order`,
-              [user.user_id]
-            );
-
-            if (pillars.length) {
-              nextWeekDays = await generateCalendarForUser(user.user_id, nextWeekStr, user, pillars);
-              console.log(`[weekly] ✅ Auto-generated calendar for user ${user.user_id}`);
-            } else {
-              console.log(`[weekly] ⚠️ No pillars for user ${user.user_id} — skipping auto-generate`);
-            }
-          } catch (genErr) {
-            console.error(`[weekly] ❌ Calendar gen failed for ${user.user_id}:`, genErr.message);
-          }
-        } else {
-          // Just fetch existing next week calendar for the digest
-          const { rows: existingDays } = await query(
-            `SELECT day_name, topic, theme, post_type FROM calendar
-             WHERE user_id = $1 AND week_start_date = $2
-               AND topic IS NOT NULL
-             ORDER BY CASE day_name
-               WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
-               WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6
-               WHEN 'Sunday' THEN 7 END`,
-            [user.user_id, nextWeekStr]
+        try {
+          const { rows: pillars } = await query(
+            `SELECT pillar_name, pillar_icon, description FROM pillars
+             WHERE user_id = $1 AND is_active = true ORDER BY display_order`,
+            [user.user_id]
           );
-          nextWeekDays = existingDays;
+
+          if (pillars.length) {
+            nextWeekDays = await generateCalendarForUser(user.user_id, nextWeekStr, user, pillars);
+            console.log(`[weekly] ✅ Auto-generated ${nextWeekDays.length} calendar days for user ${user.user_id}`);
+          } else {
+            // No pillars — fetch existing calendar if any
+            const { rows: existing } = await query(
+              `SELECT day_name, topic, theme, post_type FROM calendar
+               WHERE user_id = $1 AND week_start_date = $2 AND topic IS NOT NULL
+               ORDER BY CASE day_name
+                 WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
+                 WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6
+                 WHEN 'Sunday' THEN 7 END`,
+              [user.user_id, nextWeekStr]
+            );
+            nextWeekDays = existing;
+            console.log(`[weekly] ⚠️ No pillars for user ${user.user_id} — using existing calendar`);
+          }
+        } catch (genErr) {
+          console.error(`[weekly] ❌ Calendar gen failed for ${user.user_id}:`, genErr.message);
         }
 
         // 3. Send digest notification
         const message = buildDigestMessage({ fullName: user.full_name, nextWeekDays, publishedCount, zeroActivity, lowActivity });
-        const html = buildDigestHtml({ fullName: user.full_name, nextWeekDays, publishedCount, zeroActivity, lowActivity });
+        const html    = buildDigestHtml({ fullName: user.full_name, nextWeekDays, publishedCount, zeroActivity, lowActivity });
 
+        // FIX: pass u.email as profile.email so notify.js sends to the correct address
         await sendNotification({
-          userId: user.user_id,
-          type: 'weekly_digest',
+          userId:  user.user_id,
+          type:    'weekly_digest',
           subject: `📋 Your LinkedIn week ahead — ThoughtPilot`,
           message,
           html,
           profile: {
-            wa_notifications: user.wa_notifications,
-            wa_phone: user.wa_phone,
-            wa_apikey: user.wa_apikey,
+            wa_notifications:    user.wa_notifications,
+            wa_phone:            user.wa_phone,
+            wa_apikey:           user.wa_apikey,
             email_notifications: user.email_notifications,
-            email_from: user.email_from,
+            email:               user.email,   // ← users.email — the real recipient
           },
         });
 
         console.log(`[weekly] ✅ Digest sent to user ${user.user_id}`);
       } catch (userErr) {
         console.error(`[weekly] ❌ Failed for user ${user.user_id}:`, userErr.message);
-        // Continue processing other users
       }
     }
 
@@ -288,7 +290,7 @@ async function runWeeklyJob() {
   }
 }
 
-// ─── Register cron ────────────────────────────────────────────────────────────
+// ─── Register cron ─────────────────────────────────────────────────────────
 
 function startWeeklyJob() {
   // Every Sunday at 8:00 PM UTC

@@ -118,25 +118,26 @@ async function logNotification({ userId, type, channel, subject, body, success, 
  * @param {string} opts.subject     — email subject
  * @param {string} opts.message     — plain text for WA
  * @param {string} opts.html        — HTML for email
- * @param {Object} opts.profile     — profile row (wa_phone, wa_apikey, wa_notifications, email_notifications, email)
+ * @param {Object} opts.profile     — must include: wa_phone, wa_apikey, wa_notifications,
+ *                                    email_notifications, email (users.email — the recipient)
  */
 async function sendNotification({ userId, type, subject, message, html, profile }) {
   const results = [];
 
-  // WhatsApp
+  // ── WhatsApp ──────────────────────────────────────────────────────────────
   if (profile.wa_notifications && profile.wa_phone && profile.wa_apikey) {
     const result = await sendWhatsApp({
-      phone: profile.wa_phone,
-      apikey: profile.wa_apikey,
+      phone:   profile.wa_phone,
+      apikey:  profile.wa_apikey,
       message,
     });
     await logNotification({
       userId,
       type,
       channel: 'whatsapp',
-      body: message,
+      body:    message,
       success: result.success,
-      error: result.error,
+      error:   result.error,
     });
     results.push({ channel: 'whatsapp', ...result });
     if (!result.success) {
@@ -144,10 +145,13 @@ async function sendNotification({ userId, type, subject, message, html, profile 
     }
   }
 
-  // Email
-  if (profile.email_notifications && profile.email_from) {
+  // ── Email ─────────────────────────────────────────────────────────────────
+  // FIX: use profile.email (users.email — the actual account email) as recipient.
+  // profile.email_from is an SMTP sender credential, NOT the recipient address.
+  const recipientEmail = profile.email;
+  if (profile.email_notifications && recipientEmail) {
     const result = await sendEmail({
-      to: profile.email_from,
+      to:      recipientEmail,
       subject,
       html,
     });
@@ -156,9 +160,9 @@ async function sendNotification({ userId, type, subject, message, html, profile 
       type,
       channel: 'email',
       subject,
-      body: html,
+      body:    html,
       success: result.success,
-      error: result.error,
+      error:   result.error,
     });
     results.push({ channel: 'email', ...result });
     if (!result.success) {
