@@ -183,7 +183,7 @@ Return ONLY the cover letter text — no subject line, no metadata, no preamble.
     const completion = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       max_tokens: 1000,
-      temperature: 0.5,
+      temperature: 0.1,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `Write a cover letter for ${user_name || 'the applicant'} (${user_role || 'professional'}).\n\nCV:\n${cv_text}\n\nJOB DESCRIPTION:\n${job_description}` },

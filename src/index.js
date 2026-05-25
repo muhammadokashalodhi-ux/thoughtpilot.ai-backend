@@ -10,6 +10,7 @@ const { startAllCronJobs } = require('./cron/index');
 
 const { apiLimiter }      = require('./middleware/rateLimit');
 const authRoutes          = require('./routes/auth');
+const passwordResetRouter  = require('./routes/passwordReset');
 const profileRoutes       = require('./routes/profile');
 const adminRoutes         = require('./routes/admin');
 const postsRouter         = require('./routes/posts');
@@ -83,6 +84,7 @@ app.get('/health', (req, res) => {
 app.use('/api/health',        healthRouter);        // ← detailed health + DB check
 app.use('/api/auth',          authRoutes);
 app.use('/api/profile',       profileRoutes);
+app.use('/api/auth',          passwordResetRouter);
 app.use('/api/admin',         adminRoutes);
 app.use('/api/posts',         postsRouter);
 app.use('/api/trends',        trendsRouter);
