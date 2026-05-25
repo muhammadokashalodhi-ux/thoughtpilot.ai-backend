@@ -20,7 +20,7 @@ router.post('/forgot-password', async (req, res) => {
   try {
     // Always return success to avoid user enumeration
     const { rows } = await query(
-      'SELECT id, full_name FROM users WHERE email = $1 AND is_active = true',
+      'SELECT id, full_name FROM users WHERE LOWER(email) = LOWER($1) AND is_active = true',
       [email.toLowerCase().trim()]
     );
 
