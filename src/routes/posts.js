@@ -514,27 +514,25 @@ router.post('/generate-hooks', requireAuth, async (req, res) => {
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
-        model:       'llama-3.1-8b-instant',
-        max_tokens:  600,
+        model:       'llama-3.3-70b-versatile',
+        max_tokens:  700,
         temperature: 0.85,
         messages: [
           {
             role: 'system',
-            content: `You are a LinkedIn hook writer. Generate 4 alternative opening lines (hooks) for a LinkedIn post.
-Each hook must be attention-grabbing, punchy, and under 20 words.
-Use a different style for each: Question, Bold Statement, Contrarian, and Story/Scene.
+            content: `You are a LinkedIn hook writer. Generate 4 alternative opening lines for a LinkedIn post.
+Each hook must be under 20 words, punchy, and attention-grabbing.
 
-Respond ONLY in this exact JSON format — no preamble, no markdown, no extra text:
-[
-  { "style": "Question", "text": "..." },
-  { "style": "Bold Statement", "text": "..." },
-  { "style": "Contrarian", "text": "..." },
-  { "style": "Story/Scene", "text": "..." }
-]`,
+You MUST respond using ONLY this exact format with these exact labels — nothing else before or after:
+
+QUESTION: <hook text here>
+BOLD: <hook text here>
+CONTRARIAN: <hook text here>
+STORY: <hook text here>`,
           },
           {
             role: 'user',
-            content: `Here is the LinkedIn post. Generate 4 alternative opening hooks for it:\n\n${post_body.substring(0, 1500)}`,
+            content: `Generate 4 alternative opening hooks for this LinkedIn post:\n\n${post_body.substring(0, 1500)}`,
           },
         ],
       },
@@ -543,19 +541,33 @@ Respond ONLY in this exact JSON format — no preamble, no markdown, no extra te
           Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json',
         },
-        timeout: 20000,
+        timeout: 25000,
       }
     );
 
     const raw = groqRes.data.choices[0].message.content.trim();
+    console.log('[generate-hooks] raw response:', raw);
 
-    let hooks = [];
-    try {
-      const clean = raw.replace(/```json|```/g, '').trim();
-      hooks = JSON.parse(clean);
-    } catch {
-      // Fallback: return empty hooks rather than crashing
-      return res.status(500).json({ error: 'Failed to parse hook response' });
+    // Parse the labeled format — much more reliable than JSON
+    const styleMap = {
+      QUESTION:   'Question',
+      BOLD:       'Bold Statement',
+      CONTRARIAN: 'Contrarian',
+      STORY:      'Story/Scene',
+    };
+
+    const hooks = [];
+    for (const [key, label] of Object.entries(styleMap)) {
+      const match = raw.match(new RegExp(`${key}:\\s*(.+?)(?=\\n[A-Z]+:|$)`, 's'));
+      if (match) {
+        hooks.push({ style: label, text: match[1].trim() });
+      }
+    }
+
+    // If parsing still failed, return a safe fallback
+    if (hooks.length === 0) {
+      console.error('[generate-hooks] could not parse response:', raw);
+      return res.status(500).json({ error: 'Failed to parse hook response. Please try again.' });
     }
 
     res.json({ hooks });
