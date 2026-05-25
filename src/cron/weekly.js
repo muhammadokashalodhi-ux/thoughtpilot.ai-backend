@@ -115,7 +115,7 @@ function buildDigestMessage({ fullName, nextWeekDays, publishedCount, zeroActivi
     msg += `\n`;
   }
 
-  msg += `Manage your calendar → https://thoughtpilotai.com/dashboard/calendar`;
+  msg += `Manage your calendar → https://app.thoughtpilotai.com/dashboard/calendar`;
   return msg;
 }
 
@@ -164,18 +164,18 @@ function buildDigestHtml({ fullName, nextWeekDays, publishedCount, zeroActivity,
           <tbody>${calendarRows}</tbody>
         </table>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;">
-          <a href="https://thoughtpilotai.com/dashboard/calendar"
+          <a href="https://app.thoughtpilotai.com/dashboard/calendar"
              style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;">
             View Calendar →
           </a>
-          <a href="https://thoughtpilotai.com/dashboard/generate"
+          <a href="https://app.thoughtpilotai.com/dashboard/generate"
              style="display:inline-block;background:#1e2130;border:1px solid #2d3348;color:#94a3b8;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;">
             Generate Posts →
           </a>
         </div>
         <p style="color:#475569;font-size:12px;margin:0;">
           Manage notification preferences →
-          <a href="https://thoughtpilotai.com/dashboard/settings" style="color:#3b82f6;">Settings</a>
+          <a href="https://app.thoughtpilotai.com/dashboard/settings" style="color:#3b82f6;">Settings</a>
         </p>
       </div>
     </div>`;

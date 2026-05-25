@@ -151,10 +151,13 @@ router.patch('/:id/clear', requireAuth, async (req, res) => {
 });
 
 // ─── POST /api/calendar/:id/generate-post ────────────────────────────────────
-// Generates a post from a calendar slot, sets source='calendar' + scheduled_for
+// Generates a post from a calendar slot
+// personal_experience: true  → writes in first person using profile data
+// personal_experience: false → general thought leadership, no personal claims
 router.post('/:id/generate-post', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
+    const { personal_experience = true } = req.body;
 
     const { rows: calRows } = await query(`SELECT * FROM calendar WHERE id = $1 AND user_id = $2`, [req.params.id, userId]);
     if (!calRows.length) return res.status(404).json({ error: 'Calendar slot not found' });
@@ -166,29 +169,55 @@ router.post('/:id/generate-post', requireAuth, async (req, res) => {
     );
     const profile = profileRows[0] || {};
 
-    // Compute scheduled_for — week_start is Monday (offset 0), Sunday is offset 6
+    // Compute scheduled_for
     const dayOffsets = { monday: 0, tuesday: 1, wednesday: 2, thursday: 3, friday: 4, saturday: 5, sunday: 6 };
     const postDate = new Date(slot.week_start_date);
     postDate.setDate(postDate.getDate() + (dayOffsets[(slot.day_name || '').toLowerCase().trim()] ?? 0));
     const [hours, minutes] = (profile.post_time || '09:00').split(':').map(Number);
     postDate.setUTCHours(hours, minutes || 0, 0, 0);
 
+    // Build profile context for personal experience mode
+    const sectors = Array.isArray(profile.sectors) ? profile.sectors.join(', ') : '';
+    const profileContext = personal_experience ? [
+      profile.full_name        && `Name: ${profile.full_name}`,
+      profile.user_role        && `Role: ${profile.user_role}`,
+      profile.user_headline    && `Headline: ${profile.user_headline}`,
+      profile.years_experience && `Years of experience: ${profile.years_experience}`,
+      sectors                  && `Sectors: ${sectors}`,
+      profile.companies        && `Companies: ${profile.companies}`,
+      profile.achievements     && `Achievements: ${profile.achievements}`,
+      profile.credentials      && `Credentials: ${profile.credentials}`,
+      profile.projects         && `Projects: ${profile.projects}`,
+    ].filter(Boolean).join('\n') : '';
+
+    const systemPrompt = personal_experience
+      ? `You are a LinkedIn ghostwriter for ${profile.full_name || 'a professional'}.
+Write in first person using ONLY details explicitly mentioned in the profile data below.
+DO NOT invent or assume any experience, companies, or metrics not in the profile.
+Voice: ${profile.voice_tone || 'authentic'}, boldness ${profile.voice_boldness || 5}/10, length: ${profile.post_length || 'medium'}.
+${profile.style_notes ? `Style notes: ${profile.style_notes}` : ''}
+Return only the post body, no hashtags, no preamble.
+
+PROFILE DATA (use only what is here):
+${profileContext}`
+      : `You are a LinkedIn content writer. Write a general professional post about the given topic.
+DO NOT use first person personal claims, invented experiences, or fake metrics.
+Write as general thought leadership using "we", "professionals in this field", "industry data shows" etc.
+Voice: ${profile.voice_tone || 'professional'}, boldness ${profile.voice_boldness || 5}/10, length: ${profile.post_length || 'medium'}.
+Return only the post body, no hashtags, no preamble.`;
+
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
         model: 'llama-3.3-70b-versatile',
-        max_tokens: 600,
-        temperature: 0.75,
+        max_tokens: 800,
+        temperature: personal_experience ? 0.78 : 0.65,
         messages: [
-          {
-            role: 'system',
-            content: `You are a LinkedIn content expert. Voice: ${profile.voice_tone || 'professional'}, boldness ${profile.voice_boldness || 5}/10, length: ${profile.post_length || 'medium'}. Return only the post body, no hashtags.`,
-          },
+          { role: 'system', content: systemPrompt },
           {
             role: 'user',
             content: `Write a LinkedIn post about: "${slot.topic || slot.theme}"
-Category: ${slot.category || ''}, Type: ${slot.post_type || ''}
-${profile.style_notes ? `Style: ${profile.style_notes}` : ''}`,
+Category: ${slot.category || ''}, Type: ${slot.post_type || ''}`,
           },
         ],
       },
