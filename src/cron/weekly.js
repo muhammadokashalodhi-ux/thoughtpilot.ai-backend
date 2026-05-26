@@ -9,6 +9,7 @@ const cron = require('node-cron');
 const axios = require('axios');
 const { query } = require('../db/index');
 const { sendNotification } = require('../utils/notify');
+const { buildWeeklyDigestEmail } = require('../utils/emailTemplates');
 
 // ─── Calendar generator ────────────────────────────────────────────────────
 
@@ -263,7 +264,7 @@ async function runWeeklyJob() {
 
         // 3. Send digest notification
         const message = buildDigestMessage({ fullName: user.full_name, nextWeekDays, publishedCount, zeroActivity, lowActivity });
-        const html    = buildDigestHtml({ fullName: user.full_name, nextWeekDays, publishedCount, zeroActivity, lowActivity });
+        const html    = buildWeeklyDigestEmail({ firstName: (user.full_name||'').split(' ')[0]||user.full_name, publishedCount, zeroActivity, lowActivity, nextWeekDays });
 
         // FIX: pass u.email as profile.email so notify.js sends to the correct address
         await sendNotification({

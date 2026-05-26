@@ -5,6 +5,10 @@ const router          = express.Router();
 const { query }       = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const axios           = require('axios');
+const {
+  buildTestEmail,
+  buildProfileIncompleteEmail,
+} = require('../utils/emailTemplates');
 
 // ─── Resend helper ────────────────────────────────────────────────────────────
 async function sendEmailViaResend({ to, toName, subject, html }) {
@@ -14,10 +18,9 @@ async function sendEmailViaResend({ to, toName, subject, html }) {
   const res = await axios.post(
     'https://api.resend.com/emails',
     {
-      from:    'ThoughtPilot AI <noreply@thoughtpilotai.com>',
-      to:      toName ? [`${toName} <${to}>`] : [to],
-      subject,
-      html,
+      from: 'ThoughtPilot AI <noreply@thoughtpilotai.com>',
+      to:   toName ? [`${toName} <${to}>`] : [to],
+      subject, html,
     },
     {
       headers: {
@@ -55,7 +58,6 @@ router.get('/settings', requireAuth, async (req, res) => {
         post_schedule:       row.post_schedule,
         timezone:            row.timezone             || 'UTC',
         email_service_ready: !!process.env.RESEND_API_KEY,
-        // ── Automation fields ──
         auto_schedule:       row.auto_schedule       ?? false,
         post_time:           row.post_time           || '09:00',
       },
@@ -73,7 +75,6 @@ router.patch('/settings', requireAuth, async (req, res) => {
       wa_phone, wa_apikey,
       email_notifications, wa_notifications,
       notification_email, post_schedule, timezone,
-      // ── Automation fields ──
       auto_schedule, post_time,
     } = req.body;
 
@@ -93,7 +94,6 @@ router.patch('/settings', requireAuth, async (req, res) => {
     add('notification_email',  notification_email);
     add('post_schedule',       post_schedule);
     add('timezone',            timezone);
-    // ── Automation fields ──
     add('auto_schedule',       auto_schedule);
     add('post_time',           post_time);
 
@@ -119,7 +119,7 @@ router.post('/test-whatsapp', requireAuth, async (req, res) => {
     }
     const cleanPhone = row.wa_phone.replace(/[^0-9]/g, '');
     const message    = encodeURIComponent(
-      '✅ ThoughtPilot AI: Your WhatsApp notifications are connected! You will receive post reminders and weekly calendar updates here.'
+      '✅ ThoughtPilot AI: Your WhatsApp notifications are connected!\n\nYou will receive:\n📅 Daily post reminders\n📋 Weekly calendar digest\n✍️ Post ready alerts\n\nReply STOP to unsubscribe.'
     );
     const url = `https://api.callmebot.com/whatsapp.php?phone=${cleanPhone}&text=${message}&apikey=${row.wa_apikey}`;
     const wmRes = await axios.get(url, { timeout: 15000 });
@@ -150,53 +150,69 @@ router.post('/test-email', requireAuth, async (req, res) => {
     if (!process.env.RESEND_API_KEY) {
       return res.status(503).json({ error: 'Email service not configured on server.' });
     }
+
     const [userResult, profileResult] = await Promise.all([
       query(`SELECT email, full_name FROM users WHERE id = $1`, [req.user.id]),
-      query(`SELECT notification_email FROM profiles WHERE user_id = $1`, [req.user.id]),
+      query(
+        `SELECT notification_email, user_role, full_name, achievements,
+                companies, credentials, years_experience
+         FROM profiles WHERE user_id = $1`,
+        [req.user.id]
+      ),
     ]);
+
     const user           = userResult.rows[0];
-    const notifEmail     = profileResult.rows[0]?.notification_email;
+    const profile        = profileResult.rows[0] || {};
+    const notifEmail     = profile.notification_email;
     const recipientEmail = notifEmail || user?.email;
+
     if (!recipientEmail) {
       return res.status(400).json({ error: 'No notification email address on file.' });
     }
+
+    const firstName = (user?.full_name || profile?.full_name || 'there').split(' ')[0];
+
+    // Check profile completeness and send nudge if needed
+    const missingItems = [];
+    if (!profile.user_role)        missingItems.push('Your job title / role');
+    if (!profile.companies)        missingItems.push('Companies you\'ve worked at');
+    if (!profile.achievements)     missingItems.push('Key achievements and results');
+    if (!profile.credentials)      missingItems.push('Certifications and credentials');
+    if (!profile.years_experience) missingItems.push('Years of experience');
+
+    const html = buildTestEmail({ firstName, recipientEmail });
+
     await sendEmailViaResend({
       to:      recipientEmail,
-      toName:  user?.full_name || '',
+      toName:  firstName,
       subject: '✅ ThoughtPilot AI — Email notifications connected',
-      html: `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
-          <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);padding:28px 32px;">
-            <div style="font-size:24px;margin-bottom:6px;">🔗</div>
-            <div style="color:white;font-size:20px;font-weight:800;letter-spacing:-0.5px;">ThoughtPilot AI</div>
-            <div style="color:rgba(255,255,255,0.7);font-size:13px;">Your LinkedIn Co-pilot</div>
-          </div>
-          <div style="padding:28px 32px;">
-            <p style="font-size:16px;color:#111;margin:0 0 16px;">Hi ${user?.full_name || 'there'} 👋</p>
-            <p style="color:#374151;line-height:1.7;margin:0 0 20px;">
-              Your email notifications are connected! You'll receive updates at <strong>${recipientEmail}</strong>.
-            </p>
-            <div style="background:#f9fafb;border-radius:8px;padding:16px 20px;margin-bottom:20px;">
-              <p style="font-weight:700;color:#111;margin:0 0 12px;font-size:14px;">You'll be notified when:</p>
-              <div style="font-size:13px;color:#374151;line-height:2;">
-                ✍️ &nbsp;A new LinkedIn post is ready for your review<br/>
-                📅 &nbsp;Your weekly content calendar resets every Sunday<br/>
-                ⚡ &nbsp;A scheduled post is due for publishing
-              </div>
-            </div>
-            <p style="color:#9ca3af;font-size:12px;margin:0;">
-              Sent from noreply@thoughtpilotai.com · <a href="https://www.thoughtpilotai.com" style="color:#2563eb;">thoughtpilotai.com</a>
-            </p>
-          </div>
-        </div>
-      `,
+      html,
     });
+
+    // If profile is incomplete, send a follow-up nudge email
+    if (missingItems.length >= 3) {
+      setTimeout(async () => {
+        try {
+          await sendEmailViaResend({
+            to:      recipientEmail,
+            toName:  firstName,
+            subject: '⚠️ Your ThoughtPilot profile is incomplete — posts will be generic',
+            html:    buildProfileIncompleteEmail({ firstName, missingItems }),
+          });
+        } catch {}
+      }, 3000); // 3s delay so test email arrives first
+    }
+
     await query(
       `INSERT INTO notification_log (id, user_id, type, channel, subject, body, success, sent_at)
        VALUES (uuid_generate_v4(), $1, 'test', 'email', 'Test email', $2, true, NOW())`,
       [req.user.id, `Test email sent to ${recipientEmail}`]
     ).catch(() => {});
-    res.json({ success: true, message: `Test email sent to ${recipientEmail}` });
+
+    res.json({
+      success: true,
+      message: `Test email sent to ${recipientEmail}${missingItems.length >= 3 ? ' + profile completion nudge' : ''}`,
+    });
   } catch (err) {
     console.error('[POST /notifications/test-email]', err.message);
     await query(

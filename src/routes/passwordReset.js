@@ -7,6 +7,7 @@ const crypto  = require('crypto');
 const bcrypt  = require('bcryptjs');
 const { query } = require('../db/index');
 const { Resend } = require('resend');
+const { buildPasswordResetEmail } = require('../utils/emailTemplates');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://thoughtpilotai.com';
@@ -64,7 +65,7 @@ router.post('/forgot-password', async (req, res) => {
       from: 'ThoughtPilot AI <noreply@thoughtpilotai.com>',
       to:   email.toLowerCase().trim(),
       subject: 'Reset your ThoughtPilot AI password',
-      html: buildResetEmail(firstName, resetLink, TOKEN_TTL_MINUTES),
+      html: buildPasswordResetEmail({ firstName, resetLink: resetLink, ttlMinutes: TOKEN_TTL_MINUTES }),
     });
 
     return res.json({ message: 'If that email exists, a reset link has been sent.' });

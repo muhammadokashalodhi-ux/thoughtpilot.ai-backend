@@ -8,7 +8,27 @@ const { query } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { authLimiter } = require('../middleware/rateLimit');
 
+const axios  = require('axios');
+const { buildWelcomeEmail } = require('../utils/emailTemplates');
+
 const router = express.Router();
+
+// ── Send email via Resend ──
+async function sendEmail({ to, subject, html }) {
+  if (!process.env.RESEND_API_KEY) return;
+  try {
+    await axios.post('https://api.resend.com/emails', {
+      from: 'ThoughtPilot AI <noreply@thoughtpilotai.com>',
+      to: [to], subject, html,
+    }, {
+      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      timeout: 10000,
+    });
+  } catch (err) {
+    console.error('[Auth] Welcome email failed:', err.message);
+    // Never block signup if email fails
+  }
+}
 
 // ── Helper ──
 function generateToken(userId) {
@@ -81,6 +101,18 @@ router.post('/signup',
       setAuthCookie(res, token);
 
       console.log(`[Auth] New signup: ${email}`);
+
+      // Send welcome email (non-blocking)
+      const firstName = full_name.split(' ')[0];
+      sendEmail({
+        to: email,
+        subject: '🎉 Welcome to ThoughtPilot AI — here's what to do next',
+        html: buildWelcomeEmail({
+          firstName,
+          email,
+          onboardingComplete: false,
+        }),
+      });
 
       res.status(201).json({
         message: 'Account created successfully',

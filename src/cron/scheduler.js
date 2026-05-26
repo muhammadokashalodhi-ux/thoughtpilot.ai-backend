@@ -10,6 +10,7 @@ const cron      = require('node-cron');
 const axios     = require('axios');
 const { query } = require('../db/index');
 const { sendNotification } = require('../utils/notify');
+const { buildPostReadyEmail } = require('../utils/emailTemplates');
 
 // ─── Convert local "HH:MM" + timezone → UTC hour+minute ───────────────────
 
@@ -294,7 +295,7 @@ async function runScheduler() {
           type:    'scheduled_post',
           subject: `✅ Your LinkedIn post for ${todayName} is ready — ${topic}`,
           message: buildMessage({ fullName: user.full_name, dayName: todayName, topic, personalExperience: user.personal_experience }),
-          html:    buildEmailHtml({ fullName: user.full_name, dayName: todayName, topic, personalExperience: user.personal_experience, bodyPreview }),
+          html:    buildPostReadyEmail({ firstName: (user.full_name||'').split(' ')[0]||user.full_name, dayName: todayName, topic, bodyPreview, personalExperience: user.personal_experience }),
           profile: {
             wa_notifications:    user.wa_notifications,
             wa_phone:            user.wa_phone,
