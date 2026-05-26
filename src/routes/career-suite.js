@@ -281,4 +281,77 @@ router.get('/status', requireAuth, async (req, res) => {
   }
 });
 
+
+// ─── POST /api/career/analyze-deep ───────────────────────────────────────────
+// Call 2 — Deep intel: credibility, leadership, career story, interview risks
+// Uses 70B model — runs in parallel with analyze-cv
+router.post('/analyze-deep', requireAuth, async (req, res) => {
+  try {
+    const { messages } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'messages array is required' });
+    }
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:           'llama-3.3-70b-versatile',
+        max_tokens:      3000,
+        temperature:     0.3,
+        messages,
+        response_format: { type: 'json_object' },
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 90000,
+      }
+    );
+    const content = groqRes.data?.choices?.[0]?.message?.content;
+    if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
+    const usage = groqRes.data?.usage;
+    if (usage) console.log(`[career/deep] tokens: ${usage.total_tokens}`);
+    res.json(groqRes.data);
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please retry in 30 seconds' });
+    console.error('[career] analyze-deep error:', err?.response?.data || err.message);
+    res.status(500).json({ error: err?.response?.data?.error?.message || err.message || 'Deep analysis failed' });
+  }
+});
+
+// ─── POST /api/career/analyze-bullets ────────────────────────────────────────
+// Call 3 — Bullet & vocabulary checks using fast 8B model
+// Pattern matching only — no recruiter judgment needed
+router.post('/analyze-bullets', requireAuth, async (req, res) => {
+  try {
+    const { messages } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'messages array is required' });
+    }
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:           'llama-3.1-8b-instant',  // fast 8B — pattern matching only
+        max_tokens:      2000,
+        temperature:     0.1,                      // very low — deterministic pattern matching
+        messages,
+        response_format: { type: 'json_object' },
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 30000,  // 8B is fast — 30s is plenty
+      }
+    );
+    const content = groqRes.data?.choices?.[0]?.message?.content;
+    if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
+    const usage = groqRes.data?.usage;
+    if (usage) console.log(`[career/bullets] tokens: ${usage.total_tokens}`);
+    res.json(groqRes.data);
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please retry in 30 seconds' });
+    console.error('[career] analyze-bullets error:', err?.response?.data || err.message);
+    res.status(500).json({ error: err?.response?.data?.error?.message || err.message || 'Bullet analysis failed' });
+  }
+});
+
 module.exports = router;
