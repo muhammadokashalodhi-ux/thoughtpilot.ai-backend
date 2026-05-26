@@ -106,7 +106,7 @@ router.post('/signup',
       const firstName = full_name.split(' ')[0];
       sendEmail({
         to: email,
-        subject: '🎉 Welcome to ThoughtPilot AI — here's what to do next',
+        subject: "🎉 Welcome to ThoughtPilot AI — here's what to do next",
         html: buildWelcomeEmail({
           firstName,
           email,
