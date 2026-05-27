@@ -8,31 +8,101 @@ const { query }    = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
 // ─── Shared Groq caller with retry ──────────────────────────────────────────
+// Model fallback chain — if primary hits daily limit, try next
+const MODEL_CHAIN = [
+  'llama-3.3-70b-versatile',
+  'llama-3.1-70b-versatile',
+  'llama-3.1-8b-instant',   // last resort — less accurate but separate quota
+];
+
 async function callGroq({ messages, model = 'llama-3.3-70b-versatile', maxTokens = 3000, temperature = 0.3 }) {
-  const MAX_RETRIES = 3;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const res = await axios.post(
-        'https://api.groq.com/openai/v1/chat/completions',
-        { model, max_tokens: maxTokens, temperature, messages, response_format: { type: 'json_object' } },
-        {
-          headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-          timeout: 90000,
+  // Build model chain starting from requested model
+  const startIdx = MODEL_CHAIN.indexOf(model);
+  const chain = startIdx >= 0
+    ? MODEL_CHAIN.slice(startIdx)
+    : [model, ...MODEL_CHAIN];
+
+  for (const currentModel of chain) {
+    const MAX_RETRIES = 2;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await axios.post(
+          'https://api.groq.com/openai/v1/chat/completions',
+          { model: currentModel, max_tokens: maxTokens, temperature, messages, response_format: { type: 'json_object' } },
+          {
+            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+            timeout: 90000,
+          }
+        );
+        if (currentModel !== model) console.log(`[career/groq] Using fallback model: ${currentModel}`);
+        return res;
+      } catch (err) {
+        const status  = err?.response?.status;
+        const errCode = err?.response?.data?.error?.code;
+        // TPD (daily) limit — skip to next model immediately, no point retrying
+        if (status === 429 && errCode === 'rate_limit_exceeded' &&
+            err?.response?.data?.error?.message?.includes('tokens per day')) {
+          console.warn(`[career/groq] Daily limit hit for ${currentModel} — trying next model`);
+          break; // break inner retry loop, try next model
         }
-      );
-      return res;
-    } catch (err) {
-      const status = err?.response?.status;
-      if (status === 429 && attempt < MAX_RETRIES) {
-        const retryAfter = parseInt(err.response?.headers?.['retry-after'] || '15', 10);
-        const waitMs = Math.min(retryAfter * 1000, attempt * 10000);
-        console.warn(`[career/groq] 429 — waiting ${waitMs}ms (attempt ${attempt}/${MAX_RETRIES})`);
-        await new Promise(r => setTimeout(r, waitMs));
-        continue;
+        // TPM (per-minute) limit — wait and retry same model
+        if (status === 429 && attempt < MAX_RETRIES) {
+          const waitMs = attempt * 10000;
+          console.warn(`[career/groq] 429 TPM — waiting ${waitMs}ms (attempt ${attempt}/${MAX_RETRIES})`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+        throw err;
       }
-      throw err;
     }
   }
+  // All models exhausted
+  throw { response: { status: 429, data: { error: { message: 'All models at daily limit. Resets at midnight UTC. Upgrade at console.groq.com/settings/billing', code: 'daily_limit_exhausted' } } } };
+}
+
+// ─── Gemini Flash caller (free tier — pattern matching tasks) ────────────────
+async function callGemini({ messages, maxTokens = 2000, temperature = 0.1 }) {
+  const GEMINI_KEY = process.env.GEMINI_API_KEY;
+  if (!GEMINI_KEY) {
+    console.warn('[career/gemini] No GEMINI_API_KEY — falling back to Groq');
+    throw new Error('Gemini not configured');
+  }
+
+  // Convert OpenAI message format to Gemini format
+  const systemMsg = messages.find(m => m.role === 'system')?.content || '';
+  const userMsg   = messages.find(m => m.role === 'user')?.content   || '';
+
+  const res = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+    {
+      contents: [{
+        parts: [{ text: `${systemMsg}
+
+${userMsg}` }],
+        role: 'user',
+      }],
+      generationConfig: {
+        temperature,
+        maxOutputTokens: maxTokens,
+        responseMimeType: 'application/json',  // force JSON output
+      },
+    },
+    {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 60000,
+    }
+  );
+
+  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('Empty response from Gemini');
+
+  // Return in same shape as Groq so callers work identically
+  return {
+    data: {
+      choices: [{ message: { content: text } }],
+      usage: { total_tokens: res.data?.usageMetadata?.totalTokenCount || 0 },
+    }
+  };
 }
 
 // ─── GET /api/career/handoff ──────────────────────────────────────────────────
@@ -166,23 +236,15 @@ router.post('/analyze-job', requireAuth, async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
-    const groqRes = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model:           'llama-3.3-70b-versatile',
-        max_tokens:      2048,
-        temperature:     0.3,
-        messages,
-        response_format: { type: 'json_object' },
-      },
-      {
-        headers: {
-          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 60000,
-      }
-    );
+    // Use Gemini Flash (free) — job matching is keyword comparison, not deep judgment
+    let groqRes;
+    try {
+      groqRes = await callGemini({ messages, maxTokens: 2048, temperature: 0.2 });
+      console.log('[career/job] Using Gemini Flash (free)');
+    } catch {
+      groqRes = await callGroq({ messages, model: 'llama-3.3-70b-versatile', maxTokens: 2048, temperature: 0.3 });
+      console.log('[career/job] Fallback to Groq');
+    }
     const content = groqRes.data?.choices?.[0]?.message?.content;
     if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
     res.json(groqRes.data);
@@ -201,23 +263,17 @@ router.post('/cover-letter', requireAuth, async (req, res) => {
     if (!cv_text || !job_description) {
       return res.status(400).json({ error: 'cv_text and job_description are required' });
     }
-    const groqRes = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
+    const coverMsgs = [
       {
-        model:       'llama-3.3-70b-versatile',
-        max_tokens:  1500,
-        temperature: 0.7,
-        messages: [
-          {
-            role: 'system',
-            content: `You are an expert cover letter writer. Write a professional, personalized cover letter.
+        role: 'system',
+        content: `You are an expert cover letter writer. Write a professional, personalized cover letter.
 Format: 3–4 paragraphs. Tone: confident but not arrogant. Length: 300–400 words.
 Do NOT use generic phrases like "I am writing to apply". Open with a strong hook.
 Return ONLY the cover letter text — no subject line, no date, no address block.`,
-          },
-          {
-            role: 'user',
-            content: `Write a cover letter for ${user_name || 'the candidate'} (${user_role || 'professional'}).
+      },
+      {
+        role: 'user',
+        content: `Write a cover letter for ${user_name || 'the candidate'} (${user_role || 'professional'}).
 
 CV SUMMARY:
 ${cv_text.slice(0, 3000)}
@@ -226,17 +282,16 @@ JOB DESCRIPTION:
 ${job_description.slice(0, 2000)}
 
 ${approved_suggestions?.length ? `APPROVED IMPROVEMENTS TO INCORPORATE:\n${approved_suggestions.slice(0, 5).join('\n')}` : ''}`,
-          },
-        ],
       },
-      {
-        headers: {
-          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 60000,
-      }
-    );
+    ];
+    // Use Gemini Flash (free) for cover letter — writing task, not analysis
+    let groqRes;
+    try {
+      groqRes = await callGemini({ messages: coverMsgs, maxTokens: 1500, temperature: 0.7 });
+      console.log('[career/cover] Using Gemini Flash (free)');
+    } catch {
+      groqRes = await callGroq({ messages: coverMsgs, model: 'llama-3.3-70b-versatile', maxTokens: 1500, temperature: 0.7 });
+    }
     const cover_letter = groqRes.data?.choices?.[0]?.message?.content || '';
     if (!cover_letter) return res.status(500).json({ error: 'Failed to generate cover letter' });
     res.json({ cover_letter });
@@ -326,7 +381,16 @@ router.post('/analyze-bullets', requireAuth, async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
-    const groqRes = await callGroq({ messages, model: 'llama-3.1-8b-instant', maxTokens: 2000, temperature: 0.1 });
+    // Use Gemini Flash (free) for pattern matching — no deep judgment needed
+    let groqRes;
+    try {
+      groqRes = await callGemini({ messages, maxTokens: 2000, temperature: 0.1 });
+      console.log('[career/bullets] Using Gemini Flash (free)');
+    } catch {
+      // Fallback to Groq 8B if Gemini unavailable
+      groqRes = await callGroq({ messages, model: 'llama-3.1-8b-instant', maxTokens: 2000, temperature: 0.1 });
+      console.log('[career/bullets] Fallback to Groq 8B');
+    }
     const content = groqRes.data?.choices?.[0]?.message?.content;
     if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
     const usage = groqRes.data?.usage;
