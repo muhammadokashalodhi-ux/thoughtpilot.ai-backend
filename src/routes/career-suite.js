@@ -7,6 +7,34 @@ const crypto       = require('crypto');
 const { query }    = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
+// ─── Shared Groq caller with retry ──────────────────────────────────────────
+async function callGroq({ messages, model = 'llama-3.3-70b-versatile', maxTokens = 3000, temperature = 0.3 }) {
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await axios.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        { model, max_tokens: maxTokens, temperature, messages, response_format: { type: 'json_object' } },
+        {
+          headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+          timeout: 90000,
+        }
+      );
+      return res;
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 429 && attempt < MAX_RETRIES) {
+        const retryAfter = parseInt(err.response?.headers?.['retry-after'] || '15', 10);
+        const waitMs = Math.min(retryAfter * 1000, attempt * 10000);
+        console.warn(`[career/groq] 429 — waiting ${waitMs}ms (attempt ${attempt}/${MAX_RETRIES})`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // ─── GET /api/career/handoff ──────────────────────────────────────────────────
 // Returns user + profile + cv_prefill for the Career Suite frontend
 router.get('/handoff', requireAuth, async (req, res) => {
@@ -86,23 +114,7 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
     }
 
     // ── Call Groq ────────────────────────────────────────────────────────────
-    const groqRes = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model:           'llama-3.3-70b-versatile',
-        max_tokens:      4096,
-        temperature:     0.3,
-        messages,
-        response_format: { type: 'json_object' },
-      },
-      {
-        headers: {
-          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 90000,
-      }
-    );
+    const groqRes = await callGroq({ messages, model: 'llama-3.3-70b-versatile', maxTokens: 4096, temperature: 0.3 });
 
     const content = groqRes.data?.choices?.[0]?.message?.content;
     if (!content || !content.trim()) {
@@ -291,20 +303,7 @@ router.post('/analyze-deep', requireAuth, async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
-    const groqRes = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model:           'llama-3.3-70b-versatile',
-        max_tokens:      3000,
-        temperature:     0.3,
-        messages,
-        response_format: { type: 'json_object' },
-      },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-        timeout: 90000,
-      }
-    );
+    const groqRes = await callGroq({ messages, model: 'llama-3.3-70b-versatile', maxTokens: 3000, temperature: 0.3 });
     const content = groqRes.data?.choices?.[0]?.message?.content;
     if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
     const usage = groqRes.data?.usage;
@@ -327,20 +326,7 @@ router.post('/analyze-bullets', requireAuth, async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
-    const groqRes = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model:           'llama-3.1-8b-instant',  // fast 8B — pattern matching only
-        max_tokens:      2000,
-        temperature:     0.1,                      // very low — deterministic pattern matching
-        messages,
-        response_format: { type: 'json_object' },
-      },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-        timeout: 30000,  // 8B is fast — 30s is plenty
-      }
-    );
+    const groqRes = await callGroq({ messages, model: 'llama-3.1-8b-instant', maxTokens: 2000, temperature: 0.1 });
     const content = groqRes.data?.choices?.[0]?.message?.content;
     if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
     const usage = groqRes.data?.usage;
