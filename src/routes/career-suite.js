@@ -30,7 +30,7 @@ async function callGroq({ messages, model = 'llama-3.3-70b-versatile', maxTokens
           'https://api.groq.com/openai/v1/chat/completions',
           { model: currentModel, max_tokens: maxTokens, temperature, messages, response_format: { type: 'json_object' } },
           {
-            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+            headers: { Authorization: `Bearer ${process.env.GROQ_CAREER_API_KEY || process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
             timeout: 90000,
           }
         );
