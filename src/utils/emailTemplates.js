@@ -321,7 +321,7 @@ function buildProfileIncompleteEmail({ firstName, missingItems }) {
 function buildOnboardingReminderEmail({ firstName, email }) {
   const body = `
     ${greeting(firstName)}
-    ${para('You created your ThoughtPilot AI account but haven't finished setting it up yet. It takes about 5 minutes — and it's what makes every post the AI writes actually sound like you.')}
+    ${para('You created your ThoughtPilot AI account but did not finish setting it up yet. It takes about 5 minutes — and it is what makes every post the AI writes actually sound like you.')}
 
     ${alertBox('⚠️ <strong>Without completing onboarding</strong>, the AI has no information about your career, voice, or industry — posts will be generic and unhelpful.', 'warning')}
 
@@ -350,7 +350,7 @@ function buildOnboardingReminderEmail({ firstName, email }) {
 function buildOnboardingSecondReminderEmail({ firstName, email }) {
   const body = `
     ${greeting(firstName)}
-    ${para('It's been a couple of days since you signed up for ThoughtPilot AI — and your profile is still empty. Here's what you're missing out on right now:')}
+    ${para('It has been a couple of days since you signed up for ThoughtPilot AI — and your profile is still empty. Here is what you are missing out on right now:')}
 
     ${infoBox([
       { icon: '✍️', label: 'You could have', value: 'Generated your first LinkedIn post' },
