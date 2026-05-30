@@ -335,13 +335,13 @@ function buildOnboardingReminderEmail({ firstName, email }) {
     ${ctaRow(ctaButton('Complete my setup →', 'https://app.thoughtpilotai.com/onboarding'))}
 
     ${divider()}
-    ${smallText('You signed up with <strong style="color:#64748b;">' + email + '</strong>. If you didn't create this account, you can ignore this email.')}
+    ${smallText('You signed up with <strong style="color:#64748b;">' + email + '</strong>. If you did not create this account, you can ignore this email.')}
   `;
 
   return buildEmail({
     title: 'Your ThoughtPilot setup is incomplete',
     subtitle: 'ThoughtPilot AI',
-    preheader: 'You're almost there — 5 minutes to finish setup and start generating posts.',
+    preheader: 'You are almost there — 5 minutes to finish setup and start generating posts.',
     body,
   });
 }
@@ -366,14 +366,14 @@ function buildOnboardingSecondReminderEmail({ firstName, email }) {
     ${ctaRow(ctaButton('Complete my profile now →', 'https://app.thoughtpilotai.com/onboarding'))}
 
     ${divider()}
-    ${smallText('This is the last reminder we'll send. If you're no longer interested, simply ignore this email — your account will remain active.')}
+    ${smallText('This is the last reminder we will send. If you are no longer interested, simply ignore this email — your account will remain active.')}
     ${smallText('Signed up with <strong style="color:#64748b;">' + email + '</strong>')}
   `;
 
   return buildEmail({
-    title: 'You're missing out — here's what's waiting for you',
+    title: 'You are missing out — here is what is waiting for you',
     subtitle: 'ThoughtPilot AI',
-    preheader: 'Your LinkedIn co-pilot is ready — your profile isn't. Fix it in 5 minutes.',
+    preheader: 'Your LinkedIn co-pilot is ready — your profile is not. Fix it in 5 minutes.',
     body,
   });
 }
