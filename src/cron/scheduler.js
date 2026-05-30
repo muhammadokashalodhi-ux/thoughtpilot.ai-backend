@@ -11,7 +11,6 @@ const axios     = require('axios');
 const { query } = require('../db/index');
 const { sendNotification } = require('../utils/notify');
 const { buildOnboardingReminderEmail, buildOnboardingSecondReminderEmail } = require('../utils/emailTemplates');
-const axios = require('axios');
 
 // ── Send onboarding reminder email ────────────────────────────────────────────
 async function sendOnboardingReminder() {
@@ -383,4 +382,4 @@ function startScheduler() {
   console.log('[scheduler] 🟢 Post scheduler cron registered (every 30 min)');
 }
 
-module.exports = { startScheduler, runScheduler };
+module.exports = { startScheduler, startOnboardingReminderJob };
