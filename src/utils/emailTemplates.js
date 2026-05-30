@@ -317,6 +317,67 @@ function buildProfileIncompleteEmail({ firstName, missingItems }) {
   });
 }
 
+// ─── 7. ONBOARDING INCOMPLETE REMINDER ───────────────────────────────────────
+function buildOnboardingReminderEmail({ firstName, email }) {
+  const body = `
+    ${greeting(firstName)}
+    ${para('You created your ThoughtPilot AI account but haven't finished setting it up yet. It takes about 5 minutes — and it's what makes every post the AI writes actually sound like you.')}
+
+    ${alertBox('⚠️ <strong>Without completing onboarding</strong>, the AI has no information about your career, voice, or industry — posts will be generic and unhelpful.', 'warning')}
+
+    ${infoBox([
+      { icon: '👤', label: 'Step 1', value: 'Your role, sectors & experience' },
+      { icon: '🎙️', label: 'Step 2', value: 'Your voice tone & writing style' },
+      { icon: '🏢', label: 'Step 3', value: 'Companies, achievements & credentials' },
+      { icon: '🎯', label: 'Step 4', value: 'Content pillars — your LinkedIn themes' },
+    ])}
+
+    ${ctaRow(ctaButton('Complete my setup →', 'https://app.thoughtpilotai.com/onboarding'))}
+
+    ${divider()}
+    ${smallText('You signed up with <strong style="color:#64748b;">' + email + '</strong>. If you didn't create this account, you can ignore this email.')}
+  `;
+
+  return buildEmail({
+    title: 'Your ThoughtPilot setup is incomplete',
+    subtitle: 'ThoughtPilot AI',
+    preheader: 'You're almost there — 5 minutes to finish setup and start generating posts.',
+    body,
+  });
+}
+
+// ─── 8. ONBOARDING SECOND REMINDER ───────────────────────────────────────────
+function buildOnboardingSecondReminderEmail({ firstName, email }) {
+  const body = `
+    ${greeting(firstName)}
+    ${para('It's been a couple of days since you signed up for ThoughtPilot AI — and your profile is still empty. Here's what you're missing out on right now:')}
+
+    ${infoBox([
+      { icon: '✍️', label: 'You could have', value: 'Generated your first LinkedIn post' },
+      { icon: '📅', label: 'You could have', value: 'Planned your whole week of content' },
+      { icon: '📡', label: 'You could have', value: 'Spotted trending topics in your sector' },
+      { icon: '🎯', label: 'You could have', value: 'Analysed your CV against a job description' },
+    ])}
+
+    ${alertBox('🔒 <strong>None of this works without your profile.</strong> The AI needs to know your role, your experience, and your voice to write posts that actually sound like you — not a generic LinkedIn template.', 'warning')}
+
+    <p style="color:#94a3b8;font-size:14px;line-height:1.7;margin:0 0 16px;">It takes 5 minutes. You only do it once. After that the app runs on autopilot — generating posts, sending you reminders, and building your LinkedIn presence while you focus on your actual job.</p>
+
+    ${ctaRow(ctaButton('Complete my profile now →', 'https://app.thoughtpilotai.com/onboarding'))}
+
+    ${divider()}
+    ${smallText('This is the last reminder we'll send. If you're no longer interested, simply ignore this email — your account will remain active.')}
+    ${smallText('Signed up with <strong style="color:#64748b;">' + email + '</strong>')}
+  `;
+
+  return buildEmail({
+    title: 'You're missing out — here's what's waiting for you',
+    subtitle: 'ThoughtPilot AI',
+    preheader: 'Your LinkedIn co-pilot is ready — your profile isn't. Fix it in 5 minutes.',
+    body,
+  });
+}
+
 module.exports = {
   buildEmail,
   buildWelcomeEmail,
@@ -325,4 +386,6 @@ module.exports = {
   buildWeeklyDigestEmail,
   buildPasswordResetEmail,
   buildProfileIncompleteEmail,
+  buildOnboardingReminderEmail,
+  buildOnboardingSecondReminderEmail,
 };

@@ -10,6 +10,67 @@ const cron      = require('node-cron');
 const axios     = require('axios');
 const { query } = require('../db/index');
 const { sendNotification } = require('../utils/notify');
+const { buildOnboardingReminderEmail, buildOnboardingSecondReminderEmail } = require('../utils/emailTemplates');
+const axios = require('axios');
+
+// ── Send onboarding reminder email ────────────────────────────────────────────
+async function sendOnboardingReminder() {
+  try {
+    // Find users who signed up 24-48 hours ago and never completed onboarding
+    const { rows } = await query(`
+      SELECT u.id, u.email, u.full_name
+      FROM users u
+      WHERE u.onboarding_complete = false
+        AND u.is_active = true
+        AND u.created_at BETWEEN NOW() - INTERVAL '48 hours'
+                              AND NOW() - INTERVAL '23 hours'
+        AND u.id NOT IN (
+          SELECT DISTINCT user_id FROM notification_log
+          WHERE type = 'onboarding_reminder'
+        )
+      LIMIT 50
+    `);
+
+    if (!rows.length) return;
+
+    console.log(\`[cron] Sending onboarding reminders to \${rows.length} users\`);
+
+    for (const user of rows) {
+      try {
+        const firstName = (user.full_name || 'there').split(' ')[0];
+
+        // Send email via Resend
+        await axios.post('https://api.resend.com/emails', {
+          from:    'ThoughtPilot AI <noreply@thoughtpilotai.com>',
+          to:      [user.email],
+          subject: '⏳ Your ThoughtPilot setup is still waiting — 5 minutes to finish',
+          html:    buildOnboardingReminderEmail({ firstName, email: user.email }),
+        }, {
+          headers: {
+            Authorization: \`Bearer \${process.env.RESEND_API_KEY}\`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        });
+
+        // Log so we never send it twice
+        await query(\`
+          INSERT INTO notification_log
+            (id, user_id, type, channel, subject, body, success, sent_at)
+          VALUES
+            (uuid_generate_v4(), $1, 'onboarding_reminder', 'email',
+             'Onboarding reminder', 'Sent', true, NOW())
+        \`, [user.id]);
+
+        console.log(\`[cron] Onboarding reminder sent → \${user.email}\`);
+      } catch (err) {
+        console.error(\`[cron] Reminder failed for \${user.email}:\`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[cron] sendOnboardingReminder error:', err.message);
+  }
+}
 const { buildPostReadyEmail } = require('../utils/emailTemplates');
 
 // ─── Convert local "HH:MM" + timezone → UTC hour+minute ───────────────────
