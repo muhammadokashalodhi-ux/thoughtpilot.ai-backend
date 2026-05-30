@@ -40,6 +40,10 @@ async function upsertSubscription({
   currentPeriodEnd,
   cancelAtPeriodEnd = false,
 }) {
+  // Ensure currentPeriodEnd is a valid date or null
+  const safePeriodEnd = currentPeriodEnd instanceof Date && !isNaN(currentPeriodEnd.getTime())
+    ? currentPeriodEnd
+    : null;
   await query(
     `INSERT INTO subscriptions
        (user_id, plan, stripe_customer_id, stripe_subscription_id,
@@ -59,7 +63,7 @@ async function upsertSubscription({
     [
       userId, plan, stripeCustomerId, stripeSubscriptionId,
       stripePriceId, billingInterval, status,
-      currentPeriodEnd, cancelAtPeriodEnd,
+      safePeriodEnd, cancelAtPeriodEnd,
     ]
   );
 
@@ -110,7 +114,12 @@ async function handleCheckoutCompleted(session) {
   const priceId      = subscription.items.data[0]?.price?.id;
   const plan         = getPlanFromPriceId(priceId);
   const interval     = session.metadata?.billing_interval || 'monthly';
-  const periodEnd    = new Date(subscription.current_period_end * 1000);
+
+  // Safe timestamp conversion — current_period_end is Unix seconds
+  const periodEndTs  = subscription.current_period_end;
+  const periodEnd    = periodEndTs && !isNaN(periodEndTs)
+    ? new Date(periodEndTs * 1000)
+    : null;
 
   await upsertSubscription({
     userId,
@@ -148,7 +157,10 @@ async function handleSubscriptionUpdated(subscription) {
     ? 'free'
     : getPlanFromPriceId(priceId);
 
-  const periodEnd        = new Date(subscription.current_period_end * 1000);
+  const periodEndTs      = subscription.current_period_end;
+  const periodEnd        = periodEndTs && !isNaN(periodEndTs)
+    ? new Date(periodEndTs * 1000)
+    : null;
   const cancelAtPeriodEnd = subscription.cancel_at_period_end || false;
 
   // Determine billing interval from Stripe price interval
