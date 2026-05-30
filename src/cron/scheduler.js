@@ -32,7 +32,7 @@ async function sendOnboardingReminder() {
 
     if (!rows.length) return;
 
-    console.log(\`[cron] Sending onboarding reminders to \${rows.length} users\`);
+    console.log(`[cron] Sending onboarding reminders to \${rows.length} users`);
 
     for (const user of rows) {
       try {
@@ -46,24 +46,24 @@ async function sendOnboardingReminder() {
           html:    buildOnboardingReminderEmail({ firstName, email: user.email }),
         }, {
           headers: {
-            Authorization: \`Bearer \${process.env.RESEND_API_KEY}\`,
+            Authorization: `Bearer \${process.env.RESEND_API_KEY}`,
             'Content-Type': 'application/json',
           },
           timeout: 10000,
         });
 
         // Log so we never send it twice
-        await query(\`
+        await query(`
           INSERT INTO notification_log
             (id, user_id, type, channel, subject, body, success, sent_at)
           VALUES
             (uuid_generate_v4(), $1, 'onboarding_reminder', 'email',
              'Onboarding reminder', 'Sent', true, NOW())
-        \`, [user.id]);
+        `, [user.id]);
 
-        console.log(\`[cron] Onboarding reminder sent → \${user.email}\`);
+        console.log(`[cron] Onboarding reminder sent → \${user.email}`);
       } catch (err) {
-        console.error(\`[cron] Reminder failed for \${user.email}:\`, err.message);
+        console.error(`[cron] Reminder failed for \${user.email}:`, err.message);
       }
     }
   } catch (err) {
@@ -380,6 +380,17 @@ async function runScheduler() {
 function startScheduler() {
   cron.schedule('0,30 * * * *', () => { runScheduler(); });
   console.log('[scheduler] 🟢 Post scheduler cron registered (every 30 min)');
+}
+
+function startOnboardingReminderJob() {
+  const cron = require('node-cron');
+  // Run every hour — checks both first and second reminder windows
+  cron.schedule('0 * * * *', async () => {
+    console.log('[cron] Checking for incomplete onboardings...');
+    await sendOnboardingReminder();
+    await sendOnboardingSecondReminder();
+  });
+  console.log('[cron] Onboarding reminder jobs registered (every hour)');
 }
 
 module.exports = { startScheduler, startOnboardingReminderJob };
