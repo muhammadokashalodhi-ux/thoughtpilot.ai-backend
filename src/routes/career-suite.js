@@ -116,7 +116,8 @@ router.get('/handoff', requireAuth, async (req, res) => {
          p.user_role, p.sectors, p.location, p.voice_tone,
          p.years_experience, p.user_headline, p.companies,
          p.achievements, p.credentials, p.about_summary AS cv_prefill,
-         p.cv_analysis_cache, p.cv_analysis_hash, p.cv_analyzed_at
+         p.cv_analysis_cache, p.cv_analysis_hash, p.cv_analyzed_at,
+         p.job_match_cache, p.job_match_hash, p.job_matched_at
        FROM users u
        LEFT JOIN profiles p ON p.user_id = u.id
        WHERE u.id = $1`,
@@ -145,7 +146,11 @@ router.get('/handoff', requireAuth, async (req, res) => {
         achievements:    row.achievements,
         credentials:     row.credentials,
       },
-      cv_prefill: row.cv_prefill || null,
+      cv_prefill:         row.cv_prefill        || null,
+      cv_analysis_cache:  row.cv_analysis_cache || null,
+      cv_analyzed_at:     row.cv_analyzed_at    || null,
+      job_match_cache:    row.job_match_cache   || null,
+      job_matched_at:     row.job_matched_at    || null,
     });
   } catch (err) {
     console.error('[career] handoff error:', err.message);
@@ -236,6 +241,25 @@ router.post('/analyze-job', requireAuth, async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
+
+    // ── Job match hash cache — skip AI if same CV+JD analyzed recently ────────
+    const userMsg = messages.find(m => m.role === 'user');
+    if (userMsg?.content) {
+      const jobHash = crypto.createHash('sha256').update(userMsg.content).digest('hex');
+      const cached = await query(
+        `SELECT job_match_cache FROM profiles
+         WHERE user_id = $1
+           AND job_match_hash = $2
+           AND job_matched_at > NOW() - INTERVAL '24 hours'`,
+        [req.user.id, jobHash]
+      ).catch(() => ({ rows: [] }));
+
+      if (cached.rows[0]?.job_match_cache) {
+        console.log(`[career/job] ✅ Cache hit for user ${req.user.id}`);
+        return res.json(cached.rows[0].job_match_cache);
+      }
+    }
+
     // Use Gemini Flash (free) — job matching is keyword comparison, not deep judgment
     let groqRes;
     try {
@@ -247,6 +271,20 @@ router.post('/analyze-job', requireAuth, async (req, res) => {
     }
     const content = groqRes.data?.choices?.[0]?.message?.content;
     if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
+
+    // ── Save job match to cache ───────────────────────────────────────────────
+    if (userMsg?.content) {
+      const jobHash = crypto.createHash('sha256').update(userMsg.content).digest('hex');
+      await query(
+        `UPDATE profiles
+         SET job_match_cache  = $1,
+             job_match_hash   = $2,
+             job_matched_at   = NOW()
+         WHERE user_id = $3`,
+        [JSON.stringify(groqRes.data), jobHash, req.user.id]
+      ).catch(e => console.warn('[career/job] cache save failed:', e.message));
+    }
+
     res.json(groqRes.data);
   } catch (err) {
     const status = err?.response?.status;
