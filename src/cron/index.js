@@ -1,21 +1,45 @@
 'use strict';
 
 const cron = require('node-cron');
-const { startScheduler, startOnboardingReminderJob } = require('./scheduler');
+const axios = require('axios');
+
+const {
+  startScheduler,
+  startOnboardingReminderJob
+} = require('./scheduler');
+
 const { startWeeklyJob } = require('./weekly');
 
-// ── Keepalive ping (prevents Railway from sleeping) ───────────────────────────
-cron.schedule('*/14 * * * *', () => {
-  require('axios')
-    .get(process.env.BACKEND_URL || 'https://api.thoughtpilotai.com/health')
-    .then(() => console.log(`[keepalive] ✅ ${new Date().toISOString()} — status ok`))
-    .catch(() => {});
-});
-console.log('[keepalive] 🟢 Keep-alive cron registered (every 14 min)');
+function startAllCronJobs() {
 
-// ── Register all jobs ─────────────────────────────────────────────────────────
-startScheduler();
-startWeeklyJob();
-startOnboardingReminderJob();
+  // ── Keepalive ping ─────────────────────────────────────
+  cron.schedule('*/14 * * * *', async () => {
+    try {
+      await axios.get(
+        process.env.BACKEND_URL ||
+        'https://api.thoughtpilotai.com/health'
+      );
 
-console.log('[cron] ✅ All cron jobs registered');
+      console.log(
+        `[keepalive] ✅ ${new Date().toISOString()} — status ok`
+      );
+    } catch (err) {
+      console.error('[keepalive] Failed:', err.message);
+    }
+  });
+
+  console.log(
+    '[keepalive] 🟢 Keep-alive cron registered (every 14 min)'
+  );
+
+  // ── Other jobs ────────────────────────────────────────
+  startScheduler();
+  startWeeklyJob();
+  startOnboardingReminderJob();
+
+  console.log('[cron] ✅ All cron jobs registered');
+}
+
+module.exports = {
+  startAllCronJobs
+};
