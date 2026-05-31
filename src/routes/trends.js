@@ -101,7 +101,16 @@ router.get('/', requireAuth, async (req, res) => {
     );
 
     // Increment refresh counter
-    if (refresh === 'true') await incrementUsage(req.user.id, 'trend_refreshes_per_week');
+    // Increment trend refresh counter using correct column name
+    if (refresh === 'true') {
+      await query(
+        `UPDATE usage_tracking
+         SET trend_refreshes_this_week = trend_refreshes_this_week + 1,
+             trend_week_reset_at = COALESCE(trend_week_reset_at, date_trunc('week', CURRENT_DATE)::DATE)
+         WHERE user_id = $1`,
+        [req.user.id]
+      );
+    }
 
     res.json({
       trends: trendsData,

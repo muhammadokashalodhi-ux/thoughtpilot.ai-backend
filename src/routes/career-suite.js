@@ -6,6 +6,92 @@ const axios        = require('axios');
 const crypto       = require('crypto');
 const { query }    = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { getLimitsForPlan } = require('../config/limits');
+
+// ── Shared limit checker for Career Suite ─────────────────────────────────────
+async function checkCareerLimit(userId, plan, isBeta, isAdmin, limitType) {
+  if (isBeta || isAdmin) return null; // unlimited
+
+  const { query: dbQuery } = require('../db/index');
+  const limits = getLimitsForPlan(plan);
+
+  // Ensure row exists
+  await dbQuery(
+    `INSERT INTO usage_tracking (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
+    [userId]
+  );
+
+  const today = new Date().toISOString().slice(0, 10);
+  const r = await dbQuery(
+    `SELECT cv_analyses_today, cv_day_reset_at, job_matches_today, job_day_reset_at
+     FROM usage_tracking WHERE user_id = $1`,
+    [userId]
+  );
+  const row = r.rows[0] || {};
+
+  if (limitType === 'cv_analysis') {
+    // Reset daily counter if it's a new day
+    if (!row.cv_day_reset_at || row.cv_day_reset_at.toISOString().slice(0, 10) !== today) {
+      await dbQuery(
+        `UPDATE usage_tracking SET cv_analyses_today = 0, cv_day_reset_at = CURRENT_DATE WHERE user_id = $1`,
+        [userId]
+      );
+      row.cv_analyses_today = 0;
+    }
+    const used  = row.cv_analyses_today || 0;
+    const limit = limits.cv_analyses_per_day ?? 1;
+    if (used >= limit) {
+      return {
+        error: 'Daily CV analysis limit reached',
+        code:  'USAGE_LIMIT', limit_key: 'cv_analyses_per_day',
+        used, limit, plan,
+        upgrade_url: `${process.env.FRONTEND_URL}/dashboard/billing`,
+      };
+    }
+  }
+
+  if (limitType === 'job_match') {
+    if (!row.job_day_reset_at || row.job_day_reset_at.toISOString().slice(0, 10) !== today) {
+      await dbQuery(
+        `UPDATE usage_tracking SET job_matches_today = 0, job_day_reset_at = CURRENT_DATE WHERE user_id = $1`,
+        [userId]
+      );
+      row.job_matches_today = 0;
+    }
+    const used  = row.job_matches_today || 0;
+    const limit = limits.job_matches_per_day ?? 2;
+    if (used >= limit) {
+      return {
+        error: 'Daily job match limit reached',
+        code:  'USAGE_LIMIT', limit_key: 'job_matches_per_day',
+        used, limit, plan,
+        upgrade_url: `${process.env.FRONTEND_URL}/dashboard/billing`,
+      };
+    }
+  }
+
+  return null; // no limit hit
+}
+
+async function incrementCareerUsage(userId, limitType) {
+  const { query: dbQuery } = require('../db/index');
+  try {
+    if (limitType === 'cv_analysis') {
+      await dbQuery(
+        `UPDATE usage_tracking SET cv_analyses_today = cv_analyses_today + 1 WHERE user_id = $1`,
+        [userId]
+      );
+    }
+    if (limitType === 'job_match') {
+      await dbQuery(
+        `UPDATE usage_tracking SET job_matches_today = job_matches_today + 1 WHERE user_id = $1`,
+        [userId]
+      );
+    }
+  } catch (err) {
+    console.error('[career] incrementCareerUsage failed:', err.message);
+  }
+}
 
 // ─── Shared Groq caller with retry ──────────────────────────────────────────
 // Model fallback chain — if primary hits daily limit, try next
@@ -197,6 +283,9 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
       return res.status(500).json({ error: 'Empty response from AI — please retry' });
     }
 
+    // ── Increment usage counter ──────────────────────────────────────────────
+    await incrementCareerUsage(req.user.id, 'cv_analysis');
+
     // ── Log token usage ──────────────────────────────────────────────────────
     const usage = groqRes.data?.usage;
     if (usage) {
@@ -241,6 +330,12 @@ router.post('/analyze-job', requireAuth, async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
+
+    // ── Check daily job match limit ───────────────────────────────────────
+    const jobLimitErr = await checkCareerLimit(
+      req.user.id, req.user.plan, req.user.is_beta, req.user.is_admin, 'job_match'
+    );
+    if (jobLimitErr) return res.status(403).json(jobLimitErr);
 
     // ── Job match hash cache — skip AI if same CV+JD analyzed recently ────────
     const userMsg = messages.find(m => m.role === 'user');

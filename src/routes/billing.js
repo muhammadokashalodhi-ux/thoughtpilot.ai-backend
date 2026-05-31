@@ -83,10 +83,8 @@ router.get('/usage', requireAuth, async (req, res) => {
     const [usageResult, pillarResult] = await Promise.all([
       query(
         `SELECT posts_this_month, posts_today, trend_refreshes_this_week,
-                cv_analyses_today, cv_analyses_this_month,
-                job_matches_today, job_matches_this_month,
-                comments_today, calendar_posts_this_week,
-                billing_month_start
+                cv_analyses_today, job_matches_today, billing_month_start,
+                COALESCE(comments_today, 0) as comments_today
          FROM usage_tracking WHERE user_id = $1`,
         [userId]
       ),
@@ -102,17 +100,14 @@ router.get('/usage', requireAuth, async (req, res) => {
       plan,
       limits,
       usage: {
-        posts_this_month:           usage.posts_this_month            || 0,
-        posts_today:                usage.posts_today                 || 0,
-        trend_refreshes_this_week:  usage.trend_refreshes_this_week   || 0,
-        cv_analyses_today:          usage.cv_analyses_today           || 0,
-        cv_analyses_this_month:     usage.cv_analyses_this_month      || 0,
-        job_matches_today:          usage.job_matches_today           || 0,
-        job_matches_this_month:     usage.job_matches_this_month      || 0,
-        comments_today:             usage.comments_today              || 0,
-        calendar_posts_this_week:   usage.calendar_posts_this_week    || 0,
-        pillars:                    parseInt(pillarResult.rows[0]?.cnt || 0, 10),
-        billing_month_start:        usage.billing_month_start         || null,
+        posts_this_month:          usage.posts_this_month           || 0,
+        posts_today:               usage.posts_today                || 0,
+        trend_refreshes_this_week: usage.trend_refreshes_this_week  || 0,
+        cv_analyses_today:         usage.cv_analyses_today          || 0,
+        job_matches_today:         usage.job_matches_today          || 0,
+        pillars:                   parseInt(pillarResult.rows[0]?.cnt || 0, 10),
+        billing_month_start:       usage.billing_month_start        || null,
+        comments_today:            usage.comments_today             || 0,
       },
     });
   } catch (err) {
