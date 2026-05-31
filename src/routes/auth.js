@@ -69,7 +69,12 @@ router.post('/signup',
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { email, password, full_name } = req.body;
+    const { email, password, full_name, invite_code, account_type } = req.body;
+
+    // Check invite code — grants beta access if correct
+    const isBeta = !!(invite_code && invite_code === process.env.BETA_INVITE_CODE);
+    const plan   = isBeta ? 'beta' : 'free';
+    const accType = (account_type === 'organisation') ? 'organisation' : 'personal';
 
     try {
       const existing = await query(`SELECT id FROM users WHERE LOWER(email) = LOWER($1)`, [email]);
@@ -80,22 +85,26 @@ router.post('/signup',
       const password_hash = await bcrypt.hash(password, 12);
 
       const userRes = await query(`
-        INSERT INTO users (email, password_hash, full_name, plan, is_beta, onboarding_complete)
-        VALUES ($1, $2, $3, 'beta', TRUE, FALSE)
-        RETURNING id, email, full_name, plan, is_beta, is_admin, onboarding_complete, created_at
-      `, [email, password_hash, full_name]);
+        INSERT INTO users (email, password_hash, full_name, plan, is_beta, onboarding_complete, account_type)
+        VALUES ($1, $2, $3, $4, $5, FALSE, $6)
+        RETURNING id, email, full_name, plan, is_beta, is_admin, onboarding_complete, account_type, created_at
+      `, [email, password_hash, full_name, plan, isBeta, accType]);
 
       const user = userRes.rows[0];
 
       await query(`
         INSERT INTO subscriptions (user_id, plan, status)
-        VALUES ($1, 'beta', 'active')
-      `, [user.id]);
+        VALUES ($1, $2, 'active')
+      `, [user.id, plan]);
 
       await query(`
         INSERT INTO profiles (user_id, full_name)
         VALUES ($1, $2)
       `, [user.id, full_name]);
+
+      if (isBeta) {
+        console.log(`[Auth] Beta invite code used by: ${email}`);
+      }
 
       const token = generateToken(user.id);
       setAuthCookie(res, token);
@@ -106,7 +115,7 @@ router.post('/signup',
       const firstName = full_name.split(' ')[0];
       sendEmail({
         to: email,
-        subject: "🎉 Welcome to ThoughtPilot AI — here's what to do next",
+        subject: "🎉 Welcome to ThoughtPilot AI — here is what to do next",
         html: buildWelcomeEmail({
           firstName,
           email,
@@ -194,6 +203,7 @@ router.get('/me', requireAuth, async (req, res) => {
       SELECT
         u.id, u.email, u.full_name, u.plan, u.is_beta, u.is_admin,
         u.onboarding_complete, u.created_at, u.last_active,
+        u.account_type,
         p.user_role, p.sectors, p.location, p.voice_tone,
         p.voice_boldness, p.voice_length, p.linkedin_url,
         p.wa_phone, p.email_notifications, p.wa_notifications,
