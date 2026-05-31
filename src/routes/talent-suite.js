@@ -456,8 +456,8 @@ router.get('/history',
         conditions.push(`t.result_type = $${params.length}`);
       }
 
-      params.push(parseInt(limit as string, 10));
-      params.push(parseInt(offset as string, 10));
+      params.push(parseInt(limit, 10));
+      params.push(parseInt(offset, 10));
 
       const results = await query(
         `SELECT
@@ -474,8 +474,8 @@ router.get('/history',
       res.json({
         results:  results.rows,
         total:    results.rows.length,
-        limit:    parseInt(limit as string, 10),
-        offset:   parseInt(offset as string, 10),
+        limit:    parseInt(limit, 10),
+        offset:   parseInt(offset, 10),
       });
     } catch (err) {
       console.error('[talent] GET /history', err.message);
