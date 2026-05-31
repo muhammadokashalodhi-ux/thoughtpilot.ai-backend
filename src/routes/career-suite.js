@@ -12,7 +12,7 @@ const { getLimitsForPlan } = require('../config/limits');
 async function checkCareerLimit(userId, plan, isBeta, isAdmin, limitType) {
   if (isBeta || isAdmin) return null; // unlimited
 
-  const { query: dbQuery } = require('../db/index');
+  const dbQuery = query; // use already-imported query
   const limits = getLimitsForPlan(plan);
 
   // Ensure row exists
@@ -74,7 +74,7 @@ async function checkCareerLimit(userId, plan, isBeta, isAdmin, limitType) {
 }
 
 async function incrementCareerUsage(userId, limitType) {
-  const { query: dbQuery } = require('../db/index');
+  const dbQuery = query; // use already-imported query
   try {
     if (limitType === 'cv_analysis') {
       await dbQuery(

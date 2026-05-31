@@ -16,7 +16,7 @@ async function requireAuth(req, res, next) {
 
     // Fetch fresh user from DB on every request
     const result = await query(
-      `SELECT id, email, full_name, plan, is_beta, is_admin, is_active, onboarding_complete
+      `SELECT id, email, full_name, plan, is_beta, is_admin, is_active, onboarding_complete, account_type
        FROM users WHERE id = $1`,
       [decoded.userId]
     );
