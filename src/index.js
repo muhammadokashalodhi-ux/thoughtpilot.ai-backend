@@ -24,6 +24,8 @@ const settingsRouter      = require('./routes/settings');
 const careerRoutes        = require('./routes/career-suite');
 const webhookRouter       = require('./routes/webhooks');
 const billingRouter       = require('./routes/billing');
+const orgRoutes           = require('./routes/org');
+const talentRoutes        = require('./routes/talent-suite');
 
 const app  = express();
 app.set('trust proxy', 1);
@@ -96,6 +98,8 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings',      settingsRouter);
 app.use('/api/career',        careerRoutes);
 app.use('/api/billing',       billingRouter);
+app.use('/api/org',           orgRoutes);
+app.use('/api/talent',        talentRoutes);
 
 // ── 404 ──
 app.use((req, res) => {

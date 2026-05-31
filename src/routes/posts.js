@@ -49,7 +49,12 @@ router.post('/generate', requireAuth, checkLimit('posts_per_month'), async (req,
       return res.json({ post: result.rows[0] });
     }
 
-    // ── Load full profile for context ──────────────────────────────────────
+    // ── Org mode — completely separate code path ──────────────────────────
+    if (req.user.account_type === 'organisation' && process.env.ORG_MODE_ENABLED === 'true') {
+      return generateOrgPost(req, res);
+    }
+
+    // ── Load full profile for context (personal mode) ──────────────────────
     const profileResult = await query(
       `SELECT full_name, user_role, years_experience, user_headline,
               sectors, companies, countries, achievements,
@@ -640,5 +645,168 @@ Respond with ONLY the comment text — no quotes, no labels, no explanation.`,
     res.status(500).json({ error: 'Failed to generate author comment' });
   }
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ORG MODE — Separate post generation for organisation accounts
+// Personal mode code paths above are completely unchanged
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function generateOrgPost(req, res) {
+  const userId = req.user.id;
+  const {
+    pillar_id,
+    topic,
+    tone         = 'professional',
+    length       = 'medium',
+    type         = 'linkedin_post',
+    source       = 'manual',
+    save_only    = false,
+    body:  prebuilt_body,
+    hashtags: prebuilt_hashtags,
+    status: prebuilt_status = 'draft',
+  } = req.body;
+
+  try {
+    // Save-only for org
+    if (save_only && prebuilt_body) {
+      const result = await query(
+        `INSERT INTO posts
+           (id, user_id, pillar_id, type, topic, body, hashtags, status, source, account_type, created_at, updated_at)
+         VALUES
+           (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, $8, 'organisation', NOW(), NOW())
+         RETURNING *`,
+        [userId, pillar_id || null, type, topic || '', prebuilt_body, prebuilt_hashtags || [], prebuilt_status, source]
+      );
+      return res.json({ post: result.rows[0] });
+    }
+
+    // Load org profile
+    const orgResult = await query(
+      `SELECT o.*, m.role as my_role
+       FROM organisations o
+       JOIN org_members m ON m.org_id = o.id
+       WHERE m.user_id = $1 LIMIT 1`,
+      [userId]
+    );
+
+    if (!orgResult.rows.length) {
+      return res.status(404).json({ error: 'Organisation profile not found. Please complete setup.' });
+    }
+
+    const org = orgResult.rows[0];
+
+    // Load pillar if provided
+    let pillar = null;
+    if (pillar_id) {
+      const pillarResult = await query(
+        `SELECT pillar_name, description, prompt FROM pillars WHERE id = $1 AND user_id = $2`,
+        [pillar_id, userId]
+      );
+      pillar = pillarResult.rows[0] || null;
+    }
+
+    if (!pillar && !topic) {
+      return res.status(400).json({ error: 'pillar_id or topic is required' });
+    }
+
+    const postTopic = topic || pillar?.pillar_name || 'company update';
+
+    const systemPrompt = buildOrgSystemPrompt(org, tone, length);
+    const userPrompt   = buildOrgUserPrompt({ org, pillar, postTopic });
+
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:       'llama-3.3-70b-versatile',
+        max_tokens:  1200,
+        temperature: 0.70,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: userPrompt   },
+        ],
+      },
+      {
+        headers: {
+          Authorization:  `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+      }
+    );
+
+    const raw = groqRes.data.choices[0].message.content.trim();
+    const { body, hashtags } = parsePostResponse(raw);
+
+    // Save with account_type = organisation
+    const insertResult = await query(
+      `INSERT INTO posts
+         (id, user_id, pillar_id, type, topic, body, hashtags, status, source, account_type, created_at, updated_at)
+       VALUES
+         (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, 'draft', $7, 'organisation', NOW(), NOW())
+       RETURNING *`,
+      [userId, pillar_id || null, type, postTopic, body, hashtags, source]
+    );
+
+    res.json({ post: insertResult.rows[0] });
+
+  } catch (err) {
+    console.error('[ORG /posts/generate]', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to generate post' });
+  }
+}
+
+// ── Org system prompt ────────────────────────────────────────────────────
+function buildOrgSystemPrompt(org, tone, length) {
+  const brandVoiceDesc = {
+    professional:  'authoritative, credible, industry-expert tone — clear and direct',
+    friendly:      'warm, human, conversational — uses "we" and "our team" naturally',
+    authoritative: 'confident, bold, thought-leader voice — takes clear stances',
+    innovative:    'forward-thinking, energetic, excited about change and disruption',
+  };
+
+  const lengthGuide = {
+    short:  '80-150 words — punchy and direct',
+    medium: '150-250 words — clear narrative with one insight',
+    long:   '250-400 words — detailed, story-driven, with clear takeaways',
+  };
+
+  return `You are writing a LinkedIn post for ${org.company_name}, a ${org.org_type || 'company'} in ${org.industry || 'the industry'}.
+
+COMPANY PROFILE:
+- Company: ${org.company_name}
+- Industry: ${org.industry || 'not specified'}
+- Products/Services: ${org.products || org.services || 'not specified'}
+- Target audience: ${org.target_audience || 'industry professionals'}
+
+BRAND VOICE: ${brandVoiceDesc[org.brand_voice || 'professional']}
+
+CRITICAL RULES — NEVER BREAK:
+- ALWAYS write as the company — use "we", "our team", "at ${org.company_name}"
+- NEVER use "I" — this is a company LinkedIn page, not a personal account
+- Do NOT make up specific metrics or achievements unless provided
+- Do NOT mention competitor companies by name
+- Write for ${org.target_audience || 'industry professionals'} — they read this
+- Sound human and genuine — not like a corporate press release
+- No buzzword overload — avoid "synergy", "leverage", "disruptive" unless used naturally
+
+OUTPUT FORMAT:
+- Length: ${lengthGuide[length] || lengthGuide.medium}
+- No preamble — start the post immediately
+- Use line breaks naturally for mobile reading
+- End with a blank line then: HASHTAGS: #tag1 #tag2 #tag3 #tag4 #tag5`;
+}
+
+// ── Org user prompt ───────────────────────────────────────────────────────
+function buildOrgUserPrompt({ org, pillar, postTopic }) {
+  const pillarSection = pillar
+    ? `CONTENT PILLAR: ${pillar.pillar_name}\nPILLAR GUIDANCE: ${pillar.description || ''}\n`
+    : '';
+
+  return `${pillarSection}TOPIC: ${postTopic}
+
+Write a LinkedIn post for ${org.company_name} about this topic now.
+Use "we/our team" throughout. Never use "I".`;
+}
 
 module.exports = router;
