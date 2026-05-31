@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { checkLimit, incrementUsage } = require('../middleware/plan');
 const axios = require('axios');
 
 // ─── GET /api/calendar?week=YYYY-MM-DD ───────────────────────────────────────
@@ -32,7 +33,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // ─── POST /api/calendar/generate ─────────────────────────────────────────────
-router.post('/generate', requireAuth, async (req, res) => {
+router.post('/generate', requireAuth, checkLimit('calendar_posts_per_week'), async (req, res) => {
   try {
     const userId = req.user.id;
     const { week, days_to_post = ['Monday', 'Wednesday', 'Friday'] } = req.body;

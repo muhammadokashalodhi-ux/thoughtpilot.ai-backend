@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { checkLimit, incrementUsage } = require('../middleware/plan');
 const axios = require('axios');
 
 const CACHE_TTL_HOURS = 6;
@@ -53,6 +54,42 @@ router.get('/', requireAuth, async (req, res) => {
       }
     }
 
+    // Check weekly limit only on forced refresh
+    if (refresh === 'true') {
+      const userPlan = req.user.plan || 'free';
+      const { getLimitsForPlan } = require('../config/limits');
+      const limits = getLimitsForPlan(userPlan);
+      if (!req.user.is_admin && userPlan !== 'beta') {
+        const { query: dbQuery } = require('../db');
+        await dbQuery(
+          `INSERT INTO usage_tracking (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
+          [req.user.id]
+        );
+        const thisWeek = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
+        const r = await dbQuery(
+          `SELECT trend_refreshes_this_week, trend_week_reset_at FROM usage_tracking WHERE user_id = $1`,
+          [req.user.id]
+        );
+        const row = r.rows[0];
+        let used = 0;
+        if (row?.trend_week_reset_at?.toISOString().slice(0, 10) !== thisWeek) {
+          await dbQuery(`UPDATE usage_tracking SET trend_refreshes_this_week = 0, trend_week_reset_at = date_trunc('week', CURRENT_DATE)::DATE WHERE user_id = $1`, [req.user.id]);
+        } else {
+          used = row?.trend_refreshes_this_week || 0;
+        }
+        const weekLimit = limits.trend_refreshes_per_week ?? 999999;
+        if (used >= weekLimit) {
+          return res.status(403).json({
+            error: 'Weekly trend refresh limit reached',
+            code: 'USAGE_LIMIT',
+            limit_key: 'trend_refreshes_per_week',
+            used, limit: weekLimit, plan: userPlan,
+            upgrade_url: `${process.env.FRONTEND_URL}/dashboard/billing`,
+          });
+        }
+      }
+    }
+
     // Generate fresh trends via Groq
     const trendsData = await fetchTrendsFromGroq(sectors);
 
@@ -62,6 +99,9 @@ router.get('/', requireAuth, async (req, res) => {
        VALUES (uuid_generate_v4(), $1, $2::jsonb, NOW(), $3)`,
       [sortedSectors, JSON.stringify(trendsData), expiresAt]
     );
+
+    // Increment refresh counter
+    if (refresh === 'true') await incrementUsage(req.user.id, 'trend_refreshes_per_week');
 
     res.json({
       trends: trendsData,

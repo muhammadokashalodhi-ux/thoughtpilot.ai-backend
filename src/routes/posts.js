@@ -2,11 +2,14 @@ const express         = require('express');
 const router          = express.Router();
 const { query }       = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const { checkLimit }  = require('../middleware/plan');
+const { checkLimit, incrementUsage } = require('../middleware/plan');
 const axios           = require('axios');
 
 // ─── Generate a post via Groq ────────────────────────────────────────────────
-router.post('/generate', requireAuth, checkLimit('posts_per_month'), async (req, res) => {
+router.post('/generate', requireAuth,
+  checkLimit('posts_per_month'),
+  checkLimit('posts_per_day'),
+  async (req, res) => {
   try {
     const userId = req.user.id;
     const {
@@ -175,6 +178,10 @@ router.post('/generate', requireAuth, checkLimit('posts_per_month'), async (req,
        RETURNING *`,
       [userId, pillar_id || null, type, postTopic, body, hashtags, source, sector_context]
     );
+
+    // Increment usage counters after successful generation
+    await incrementUsage(userId, 'posts_per_month');
+    await incrementUsage(userId, 'posts_per_day');
 
     res.json({ post: insertResult.rows[0] });
 

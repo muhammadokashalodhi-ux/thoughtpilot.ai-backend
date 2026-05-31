@@ -2,11 +2,12 @@
 const router = express.Router();
 const { query } = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { checkLimit, incrementUsage } = require('../middleware/plan');
 const axios = require('axios');
 
 // ─── POST /api/comments/generate ─────────────────────────────────────────────
 // Generate a LinkedIn comment in the user's voice
-router.post('/generate', requireAuth, async (req, res) => {
+router.post('/generate', requireAuth, checkLimit('comments_per_day'), async (req, res) => {
   try {
     const userId = req.user.id;
     const { post_text, post_author, post_context, comment_intent = 'add_value', tone_override } = req.body;
@@ -103,6 +104,8 @@ Write the comment now:`;
     );
 
     const comment = groqRes.data.choices[0].message.content.trim();
+
+    await incrementUsage(userId, 'comments_per_day');
 
     res.json({ comment, intent: comment_intent, tone });
   } catch (err) {
