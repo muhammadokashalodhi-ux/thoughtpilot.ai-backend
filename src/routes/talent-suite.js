@@ -277,7 +277,7 @@ router.post('/employer-brand',
       const org = await getOrgForUser(req.user.id);
       if (!org) return res.status(404).json({ error: 'Organisation not found' });
 
-      const topicLabels: Record<string, string> = {
+      const topicLabels = {
         company_culture: 'company culture and values',
         team_spotlight:  'a team member or team achievement',
         growth_story:    'company growth and milestones',
@@ -288,7 +288,7 @@ router.post('/employer-brand',
         csr:             'corporate social responsibility initiative',
       };
 
-      const brandVoiceDesc: Record<string, string> = {
+      const brandVoiceDesc = {
         professional:  'authoritative but approachable, credible, data-driven',
         friendly:      'warm, human, conversational, uses we and our team',
         authoritative: 'confident, expert, industry leader tone',
@@ -449,7 +449,7 @@ router.get('/history',
       if (!org) return res.status(404).json({ error: 'Organisation not found' });
 
       const conditions = ['t.org_id = $1'];
-      const params: any[]     = [org.id];
+      const params = [org.id];
 
       if (type) {
         params.push(type);
