@@ -106,9 +106,8 @@ async function incrementCareerUsage(userId, limitType) {
 // ─── Shared Groq caller with retry ──────────────────────────────────────────
 // Model fallback chain — if primary hits daily limit, try next
 const MODEL_CHAIN = [
-  'llama-3.3-70b-versatile',          // primary
-  'llama-4-scout-17b-16e-instruct',   // fallback — Llama 4, active on Groq
-  'llama-3.1-8b-instant',             // last resort — separate quota
+  'llama-3.3-70b-versatile',   // primary — confirmed active
+  'llama-3.1-8b-instant',      // fallback — confirmed active, separate quota
 ];
 
 async function callGroq({ messages, model = 'llama-3.3-70b-versatile', maxTokens = 3000, temperature = 0.3 }) {
