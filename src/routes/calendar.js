@@ -37,6 +37,11 @@ router.post('/generate', requireAuth, async (req, res) => {
     const userId = req.user.id;
     const { week, days_to_post = ['Monday', 'Wednesday', 'Friday'] } = req.body;
 
+    // ── Org mode branch ──────────────────────────────────────────────────
+    if (req.user.account_type === 'organisation' && process.env.ORG_MODE_ENABLED === 'true') {
+      return generateOrgCalendar(req, res);
+    }
+
     const weekStart = week ? new Date(week) : getMondayOfWeek(new Date());
     const weekStartStr = weekStart.toISOString().split('T')[0];
 
@@ -258,6 +263,108 @@ function getMondayOfWeek(date) {
   d.setDate(d.getDate() - day + (day === 0 ? -6 : 1));
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ORG MODE — Calendar generation for organisation accounts
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function generateOrgCalendar(req, res) {
+  const userId = req.user.id;
+  const { week, days_to_post = ['Monday', 'Wednesday', 'Friday'] } = req.body;
+
+  const weekStart    = week ? new Date(week) : getMondayOfWeek(new Date());
+  const weekStartStr = weekStart.toISOString().split('T')[0];
+
+  try {
+    const [orgResult, pillarsResult] = await Promise.all([
+      query(
+        `SELECT o.* FROM organisations o
+         JOIN org_members m ON m.org_id = o.id
+         WHERE m.user_id = $1 LIMIT 1`,
+        [userId]
+      ),
+      query(
+        `SELECT id, pillar_name, pillar_icon, description FROM pillars
+         WHERE user_id = $1 AND is_active = true ORDER BY display_order`,
+        [userId]
+      ),
+    ]);
+
+    const org     = orgResult.rows[0];
+    const pillars = pillarsResult.rows;
+
+    if (!org)     return res.status(404).json({ error: 'Organisation profile not found' });
+    if (!pillars.length) return res.status(400).json({ error: 'You need at least one active content pillar to generate a calendar.' });
+
+    const pillarList = pillars.map((p, i) => `${i + 1}. ${p.pillar_icon} ${p.pillar_name}: ${p.description}`).join('\n');
+
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:       'llama-3.1-8b-instant',
+        max_tokens:  1000,
+        temperature: 0.7,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a LinkedIn content strategist planning a week of content for a company page.
+Output ONLY valid JSON — no markdown, no preamble.
+JSON shape: { "plan": [ { "day_name": string, "theme": string, "topic": string, "category": string, "post_type": string } ] }
+post_type: linkedin_post | insight | story | tip | opinion | case_study
+category: thought_leadership | education | engagement | product_update | hiring | company_culture`,
+          },
+          {
+            role: 'user',
+            content: `Company: ${org.company_name}
+Industry: ${org.industry || 'not specified'}
+Products/Services: ${org.products || org.services || 'not specified'}
+Target audience: ${org.target_audience || 'industry professionals'}
+Brand voice: ${org.brand_voice || 'professional'}
+Posting days: ${days_to_post.join(', ')}
+Pillars:
+${pillarList}
+Create a varied strategic weekly plan for this company LinkedIn page. Rotate pillars. Mix post types. Write in brand voice — use "we/our team" topics.`,
+          },
+        ],
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      }
+    );
+
+    let plan;
+    try {
+      plan = JSON.parse(groqRes.data.choices[0].message.content.trim().replace(/\`\`\`json|\`\`\`/g, '')).plan;
+    } catch {
+      return res.status(500).json({ error: 'Failed to parse AI response. Please try again.' });
+    }
+
+    await query(`DELETE FROM calendar WHERE user_id = $1 AND week_start_date = $2`, [userId, weekStartStr]);
+
+    const ALL_DAYS  = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const planMap   = {};
+    plan.forEach((p) => { planMap[p.day_name] = p; });
+
+    const results = await Promise.all(
+      ALL_DAYS.map((day) => {
+        const p = planMap[day];
+        return query(
+          `INSERT INTO calendar (id, user_id, week_start_date, day_name, theme, topic, category, post_type, account_type)
+           VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, 'organisation') RETURNING *`,
+          [userId, weekStartStr, day, p?.theme || null, p?.topic || null, p?.category || null, p?.post_type || null]
+        );
+      })
+    );
+
+    res.json({ week_start: weekStartStr, days: results.map((r) => r.rows[0]), pillars, is_generated: true });
+
+  } catch (err) {
+    console.error('[ORG /calendar/generate]', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to generate org calendar' });
+  }
 }
 
 module.exports = router;

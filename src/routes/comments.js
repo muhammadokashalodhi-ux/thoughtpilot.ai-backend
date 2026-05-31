@@ -13,6 +13,11 @@ router.post('/generate', requireAuth, async (req, res) => {
 
     if (!post_text) return res.status(400).json({ error: 'post_text is required' });
 
+    // ── Org mode branch ──────────────────────────────────────────────────
+    if (req.user.account_type === 'organisation' && process.env.ORG_MODE_ENABLED === 'true') {
+      return generateOrgComment(req, res);
+    }
+
     const profileResult = await query(
       `SELECT full_name, user_role, years_experience, user_headline,
               sectors, voice_boldness, voice_tone, style_notes, credentials
@@ -167,5 +172,99 @@ No preamble, no markdown, no extra text.`,
     res.status(500).json({ error: 'Failed to generate variations' });
   }
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ORG MODE — Comment generation in brand voice
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function generateOrgComment(req, res) {
+  const userId = req.user.id;
+  const { post_text, post_author, post_context, comment_intent = 'add_value', tone_override } = req.body;
+
+  if (!post_text) return res.status(400).json({ error: 'post_text is required' });
+
+  try {
+    const orgResult = await query(
+      `SELECT o.* FROM organisations o
+       JOIN org_members m ON m.org_id = o.id
+       WHERE m.user_id = $1 LIMIT 1`,
+      [userId]
+    );
+
+    if (!orgResult.rows.length) {
+      return res.status(404).json({ error: 'Organisation profile not found' });
+    }
+
+    const org = orgResult.rows[0];
+
+    const brandVoiceDesc = {
+      professional:  'authoritative and credible — clear, direct, industry expert',
+      friendly:      'warm and human — conversational, uses "we" naturally',
+      authoritative: 'confident thought leader — takes clear stances',
+      innovative:    'forward-thinking and energetic',
+    };
+
+    const intentGuide = {
+      add_value:             'Add a unique company insight or industry perspective that extends the post.',
+      agree_expand:          'Agree and add a complementary point from the company perspective.',
+      disagree_respectfully: 'Respectfully offer a different industry perspective.',
+      ask_question:          'Ask a genuinely curious, intelligent question as the company.',
+      share_experience:      'Share a relevant company experience or client case briefly.',
+      congratulate:          'Offer a warm, specific, non-generic congratulation.',
+    };
+
+    const systemPrompt = `You are writing a LinkedIn comment on behalf of ${org.company_name}, a ${org.org_type || 'company'} in ${org.industry || 'the industry'}.
+
+COMPANY:
+- Name: ${org.company_name}
+- Industry: ${org.industry || 'not specified'}
+- Brand voice: ${brandVoiceDesc[org.brand_voice || 'professional']}
+- Target audience: ${org.target_audience || 'industry professionals'}
+
+COMMENT RULES:
+- Write as the company — use "we", "our team", "at ${org.company_name}"
+- NEVER use "I" — this is a company account
+- Sound human and genuine — not like a PR statement
+- Max 3 sentences unless the intent demands more
+- Never start with "Great post!" or sycophantic openers
+- Add genuine value
+
+Output ONLY the comment text. No preamble, no labels, no quotes.`;
+
+    const userPrompt = `POST${post_author ? ` by ${post_author}` : ''}:
+"${post_text}"
+${post_context ? `Additional context: ${post_context}` : ''}
+
+COMMENT INTENT: ${comment_intent}
+INSTRUCTION: ${intentGuide[comment_intent] || intentGuide.add_value}
+
+Write the comment now:`;
+
+    const groqRes = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model:       'llama-3.1-8b-instant',
+        max_tokens:  300,
+        temperature: 0.75,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: userPrompt   },
+        ],
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 20000,
+      }
+    );
+
+    const comment = groqRes.data.choices[0].message.content.trim();
+    res.json({ comment, intent: comment_intent, mode: 'organisation' });
+
+  } catch (err) {
+    console.error('[ORG /comments/generate]', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to generate comment' });
+  }
+}
 
 module.exports = router;
