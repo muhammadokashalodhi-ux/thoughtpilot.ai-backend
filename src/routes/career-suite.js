@@ -8,262 +8,269 @@ const { query }    = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { getLimitsForPlan } = require('../config/limits');
 
-// ── Shared limit checker for Career Suite ─────────────────────────────────────
-async function checkCareerLimit(userId, plan, isBeta, isAdmin, limitType) {
-  if (isBeta || isAdmin) return null; // unlimited
+// ─── Career limit checker ─────────────────────────────────────────────────────
+// Returns error object if limit hit, null if allowed
+// Also increments the counter atomically — no separate increment needed
+async function checkAndIncrementLimit(userId, plan, isBeta, isAdmin, limitType) {
+  if (isBeta || isAdmin) return null; // beta/admin = unlimited
 
   const limits = getLimitsForPlan(plan);
-  const today  = new Date().toISOString().slice(0, 10);
 
-  // Upsert row — ensure it exists with today's reset dates
-  // Use a single UPSERT that also handles daily resets atomically
   if (limitType === 'cv_analysis') {
-    const r = await query(`
-      INSERT INTO usage_tracking (user_id, cv_analyses_today, cv_day_reset_at)
-      VALUES ($1, 0, CURRENT_DATE)
-      ON CONFLICT (user_id) DO UPDATE SET
-        cv_analyses_today = CASE
-          WHEN usage_tracking.cv_day_reset_at < CURRENT_DATE
-          THEN 0
-          ELSE usage_tracking.cv_analyses_today
-        END,
-        cv_day_reset_at = CURRENT_DATE
-      RETURNING cv_analyses_today
-    `, [userId]);
+    const limit = limits.cv_analyses_per_day || 1;
 
-    const used  = r.rows[0]?.cv_analyses_today ?? 0;
-    const limit = limits.cv_analyses_per_day ?? 1;
+    // Ensure row exists first
+    await query(
+      'INSERT INTO usage_tracking (user_id, cv_analyses_today, cv_day_reset_at) VALUES ($1, 0, CURRENT_DATE) ON CONFLICT (user_id) DO NOTHING',
+      [userId]
+    );
 
-    console.log(`[career] CV limit check — user: \${userId}, plan: \${plan}, used: \${used}, limit: \${limit}`);
+    // Reset counter if it is a new day
+    await query(
+      'UPDATE usage_tracking SET cv_analyses_today = 0, cv_day_reset_at = CURRENT_DATE WHERE user_id = $1 AND cv_day_reset_at < CURRENT_DATE',
+      [userId]
+    );
+
+    // Read current count
+    const r = await query(
+      'SELECT cv_analyses_today FROM usage_tracking WHERE user_id = $1',
+      [userId]
+    );
+    const used = r.rows[0] ? r.rows[0].cv_analyses_today : 0;
+
+    console.log('[career] CV limit check — user: ' + userId + ', plan: ' + plan + ', used: ' + used + ', limit: ' + limit);
 
     if (used >= limit) {
       return {
         error: 'Daily CV analysis limit reached — upgrade to analyse more CVs',
-        code:  'USAGE_LIMIT', limit_key: 'cv_analyses_per_day',
-        used, limit, plan,
-        upgrade_url: `\${process.env.FRONTEND_URL}/dashboard/billing`,
+        code: 'USAGE_LIMIT',
+        limit_key: 'cv_analyses_per_day',
+        used: used,
+        limit: limit,
+        plan: plan,
+        upgrade_url: (process.env.FRONTEND_URL || 'https://app.thoughtpilotai.com') + '/dashboard/billing',
       };
     }
+
+    // Increment
+    await query(
+      'UPDATE usage_tracking SET cv_analyses_today = cv_analyses_today + 1 WHERE user_id = $1',
+      [userId]
+    );
+    console.log('[career] CV analysis incremented for user ' + userId + ' — now ' + (used + 1) + '/' + limit);
+    return null;
   }
 
   if (limitType === 'job_match') {
-    const r = await query(`
-      INSERT INTO usage_tracking (user_id, job_matches_today, job_day_reset_at)
-      VALUES ($1, 0, CURRENT_DATE)
-      ON CONFLICT (user_id) DO UPDATE SET
-        job_matches_today = CASE
-          WHEN usage_tracking.job_day_reset_at < CURRENT_DATE
-          THEN 0
-          ELSE usage_tracking.job_matches_today
-        END,
-        job_day_reset_at = CURRENT_DATE
-      RETURNING job_matches_today
-    `, [userId]);
+    const limit = limits.job_matches_per_day || 2;
 
-    const used  = r.rows[0]?.job_matches_today ?? 0;
-    const limit = limits.job_matches_per_day ?? 2;
+    await query(
+      'INSERT INTO usage_tracking (user_id, job_matches_today, job_day_reset_at) VALUES ($1, 0, CURRENT_DATE) ON CONFLICT (user_id) DO NOTHING',
+      [userId]
+    );
 
-    console.log(`[career] Job limit check — user: \${userId}, plan: \${plan}, used: \${used}, limit: \${limit}`);
+    await query(
+      'UPDATE usage_tracking SET job_matches_today = 0, job_day_reset_at = CURRENT_DATE WHERE user_id = $1 AND job_day_reset_at < CURRENT_DATE',
+      [userId]
+    );
+
+    const r = await query(
+      'SELECT job_matches_today FROM usage_tracking WHERE user_id = $1',
+      [userId]
+    );
+    const used = r.rows[0] ? r.rows[0].job_matches_today : 0;
+
+    console.log('[career] Job limit check — user: ' + userId + ', plan: ' + plan + ', used: ' + used + ', limit: ' + limit);
 
     if (used >= limit) {
       return {
         error: 'Daily job match limit reached — upgrade to run more matches',
-        code:  'USAGE_LIMIT', limit_key: 'job_matches_per_day',
-        used, limit, plan,
-        upgrade_url: `\${process.env.FRONTEND_URL}/dashboard/billing`,
+        code: 'USAGE_LIMIT',
+        limit_key: 'job_matches_per_day',
+        used: used,
+        limit: limit,
+        plan: plan,
+        upgrade_url: (process.env.FRONTEND_URL || 'https://app.thoughtpilotai.com') + '/dashboard/billing',
       };
     }
+
+    await query(
+      'UPDATE usage_tracking SET job_matches_today = job_matches_today + 1 WHERE user_id = $1',
+      [userId]
+    );
+    console.log('[career] Job match incremented for user ' + userId + ' — now ' + (used + 1) + '/' + limit);
+    return null;
   }
 
-  return null; // no limit hit
+  return null;
 }
 
-async function incrementCareerUsage(userId, limitType) {
-  try {
-    if (limitType === 'cv_analysis') {
-      await query(
-        `UPDATE usage_tracking
-         SET cv_analyses_today = cv_analyses_today + 1
-         WHERE user_id = $1`,
-        [userId]
-      );
-      console.log(`[career] CV analysis incremented for user \${userId}`);
-    }
-    if (limitType === 'job_match') {
-      await query(
-        `UPDATE usage_tracking
-         SET job_matches_today = job_matches_today + 1
-         WHERE user_id = $1`,
-        [userId]
-      );
-      console.log(`[career] Job match incremented for user \${userId}`);
-    }
-  } catch (err) {
-    console.error('[career] incrementCareerUsage failed:', err.message);
-  }
-}
-
-// ─── Shared Groq caller with retry ──────────────────────────────────────────
-// Model fallback chain — if primary hits daily limit, try next
+// ─── Groq caller with model fallback ─────────────────────────────────────────
 const MODEL_CHAIN = [
-  'llama-3.3-70b-versatile',   // primary — confirmed active
-  'llama-3.1-8b-instant',      // fallback — confirmed active, separate quota
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
 ];
 
-async function callGroq({ messages, model = 'llama-3.3-70b-versatile', maxTokens = 3000, temperature = 0.3 }) {
-  // Build model chain starting from requested model
+async function callGroq({ messages, model, maxTokens, temperature }) {
+  model       = model       || 'llama-3.3-70b-versatile';
+  maxTokens   = maxTokens   || 3000;
+  temperature = temperature || 0.3;
+
   const startIdx = MODEL_CHAIN.indexOf(model);
-  const chain = startIdx >= 0
-    ? MODEL_CHAIN.slice(startIdx)
-    : [model, ...MODEL_CHAIN];
+  const chain    = startIdx >= 0 ? MODEL_CHAIN.slice(startIdx) : [model].concat(MODEL_CHAIN);
 
-  for (const currentModel of chain) {
-    const MAX_RETRIES = 2;
+  for (var ci = 0; ci < chain.length; ci++) {
+    var currentModel = chain[ci];
+    var effectiveMessages = messages;
+    var effectiveMaxTokens = maxTokens;
 
-    // 8B model has very low TPM (6K) — trim messages to fit
-    let effectiveMessages = messages;
+    // 8B has low TPM — trim large messages
     if (currentModel === 'llama-3.1-8b-instant') {
-      effectiveMessages = messages.map(m => {
+      effectiveMessages = messages.map(function(m) {
         if (m.role === 'user' && m.content && m.content.length > 8000) {
-          return { ...m, content: m.content.slice(0, 8000) + '
-
-[Content trimmed for 8B model]' };
+          return { role: m.role, content: m.content.slice(0, 8000) };
         }
         return m;
       });
-      maxTokens = Math.min(maxTokens, 1500); // 8B max output also limited
+      effectiveMaxTokens = Math.min(maxTokens, 1500);
     }
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    var lastErr = null;
+    for (var attempt = 1; attempt <= 2; attempt++) {
       try {
-        const res = await axios.post(
+        var res = await axios.post(
           'https://api.groq.com/openai/v1/chat/completions',
-          { model: currentModel, max_tokens: maxTokens, temperature, messages: effectiveMessages, response_format: { type: 'json_object' } },
           {
-            headers: { Authorization: `Bearer ${process.env.GROQ_CAREER_API_KEY || process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+            model: currentModel,
+            max_tokens: effectiveMaxTokens,
+            temperature: temperature,
+            messages: effectiveMessages,
+            response_format: { type: 'json_object' },
+          },
+          {
+            headers: {
+              Authorization: 'Bearer ' + (process.env.GROQ_CAREER_API_KEY || process.env.GROQ_API_KEY),
+              'Content-Type': 'application/json',
+            },
             timeout: 90000,
           }
         );
-        if (currentModel !== model) console.log(`[career/groq] Using fallback model: ${currentModel}`);
+        if (currentModel !== model) {
+          console.log('[career/groq] Using fallback model: ' + currentModel);
+        }
         return res;
       } catch (err) {
-        const status  = err?.response?.status;
-        const errCode = err?.response?.data?.error?.code;
-        // TPD (daily) limit — skip to next model immediately, no point retrying
-        if (status === 429 && errCode === 'rate_limit_exceeded' &&
-            err?.response?.data?.error?.message?.includes('tokens per day')) {
-          console.warn(`[career/groq] Daily limit hit for ${currentModel} — trying next model`);
-          break; // break inner retry loop, try next model
+        lastErr = err;
+        var status  = err && err.response ? err.response.status : 0;
+        var errMsg  = err && err.response && err.response.data && err.response.data.error ? err.response.data.error.message || '' : '';
+        var errCode = err && err.response && err.response.data && err.response.data.error ? err.response.data.error.code || '' : '';
+
+        // Model decommissioned — try next
+        if (status === 500 && (errMsg.indexOf('decommissioned') !== -1 || errMsg.indexOf('does not exist') !== -1)) {
+          console.warn('[career/groq] Model ' + currentModel + ' unavailable — trying next');
+          break;
         }
-        // TPM (per-minute) limit — wait and retry same model
-        if (status === 429 && attempt < MAX_RETRIES) {
-          const waitMs = attempt * 10000;
-          console.warn(`[career/groq] 429 TPM — waiting ${waitMs}ms (attempt ${attempt}/${MAX_RETRIES})`);
-          await new Promise(r => setTimeout(r, waitMs));
+        // Daily token limit — try next model
+        if (status === 429 && errMsg.indexOf('tokens per day') !== -1) {
+          console.warn('[career/groq] Daily limit hit for ' + currentModel + ' — trying next model');
+          break;
+        }
+        // Per-minute rate limit — wait and retry
+        if (status === 429 && attempt < 2) {
+          console.warn('[career/groq] 429 TPM — waiting 10s (attempt ' + attempt + '/2)');
+          await new Promise(function(r) { setTimeout(r, 10000); });
           continue;
         }
+        // Other error — throw immediately
         throw err;
       }
     }
   }
+
   // All models exhausted
-  throw { response: { status: 429, data: { error: { message: 'All models at daily limit. Resets at midnight UTC. Upgrade at console.groq.com/settings/billing', code: 'daily_limit_exhausted' } } } };
+  throw {
+    response: {
+      status: 429,
+      data: { error: { message: 'All models at daily limit. Resets at midnight UTC.', code: 'daily_limit_exhausted' } },
+    },
+  };
 }
 
-// ─── Gemini Flash caller (free tier — pattern matching tasks) ────────────────
-async function callGemini({ messages, maxTokens = 2000, temperature = 0.1 }) {
-  const GEMINI_KEY = process.env.GEMINI_API_KEY;
+// ─── Gemini Flash caller (free) ───────────────────────────────────────────────
+async function callGemini({ messages, maxTokens, temperature }) {
+  maxTokens   = maxTokens   || 2000;
+  temperature = temperature || 0.1;
+
+  var GEMINI_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_KEY) {
-    console.error('[career/gemini] GEMINI_API_KEY not set in Railway env vars');
+    console.error('[career/gemini] GEMINI_API_KEY not set');
     throw new Error('Gemini not configured');
   }
 
-  // Convert OpenAI message format to Gemini format
-  const systemMsg = messages.find(m => m.role === 'system')?.content || '';
-  const userMsg   = messages.find(m => m.role === 'user')?.content   || '';
+  var systemMsg = '';
+  var userMsg   = '';
+  for (var i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'system') systemMsg = messages[i].content || '';
+    if (messages[i].role === 'user')   userMsg   = messages[i].content || '';
+  }
 
-  const res = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+  var res = await axios.post(
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + GEMINI_KEY,
     {
-      contents: [{
-        parts: [{ text: `${systemMsg}
-
-${userMsg}` }],
-        role: 'user',
-      }],
+      contents: [{ parts: [{ text: systemMsg + '\n\n' + userMsg }], role: 'user' }],
       generationConfig: {
-        temperature,
+        temperature: temperature,
         maxOutputTokens: maxTokens,
-        responseMimeType: 'application/json',  // force JSON output
+        responseMimeType: 'application/json',
       },
     },
     {
       headers: { 'Content-Type': 'application/json' },
-      timeout: 60000,
+      timeout: 25000,
     }
   );
 
-  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  var text = res.data && res.data.candidates && res.data.candidates[0] &&
+             res.data.candidates[0].content && res.data.candidates[0].content.parts &&
+             res.data.candidates[0].content.parts[0] ? res.data.candidates[0].content.parts[0].text : null;
+
   if (!text) {
-    console.error('[career/gemini] Empty response — candidates:', JSON.stringify(res.data?.candidates?.slice(0,1)));
+    console.error('[career/gemini] Empty response');
     throw new Error('Empty response from Gemini');
   }
 
-  // Return in same shape as Groq so callers work identically
   return {
     data: {
       choices: [{ message: { content: text } }],
-      usage: { total_tokens: res.data?.usageMetadata?.totalTokenCount || 0 },
-    }
+      usage: { total_tokens: res.data.usageMetadata ? res.data.usageMetadata.totalTokenCount || 0 : 0 },
+    },
   };
 }
 
 // ─── GET /api/career/handoff ──────────────────────────────────────────────────
-// Returns user + profile + cv_prefill for the Career Suite frontend
 router.get('/handoff', requireAuth, async (req, res) => {
   try {
-    const { rows } = await query(
-      `SELECT
-         u.id, u.email, u.full_name, u.plan, u.is_beta, u.is_admin,
-         u.onboarding_complete,
-         p.user_role, p.sectors, p.location, p.voice_tone,
-         p.years_experience, p.user_headline, p.companies,
-         p.achievements, p.credentials, p.about_summary AS cv_prefill,
-         p.cv_analysis_cache, p.cv_analysis_hash, p.cv_analyzed_at,
-         p.job_match_cache, p.job_match_hash, p.job_matched_at
-       FROM users u
-       LEFT JOIN profiles p ON p.user_id = u.id
-       WHERE u.id = $1`,
+    var result = await query(
+      'SELECT u.id, u.email, u.full_name, u.plan, u.is_beta, u.is_admin, u.onboarding_complete, p.user_role, p.sectors, p.location, p.voice_tone, p.years_experience, p.user_headline, p.companies, p.achievements, p.credentials, p.about_summary AS cv_prefill, p.cv_analysis_cache, p.cv_analysis_hash, p.cv_analyzed_at FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = $1',
       [req.user.id]
     );
-    if (!rows.length) return res.status(404).json({ error: 'User not found' });
-    const row = rows[0];
+    if (!result.rows.length) return res.status(404).json({ error: 'User not found' });
+    var row = result.rows[0];
     res.json({
       user: {
-        id:                  row.id,
-        email:               row.email,
-        full_name:           row.full_name,
-        plan:                row.plan,
-        is_beta:             row.is_beta,
-        is_admin:            row.is_admin,
+        id: row.id, email: row.email, full_name: row.full_name,
+        plan: row.plan, is_beta: row.is_beta, is_admin: row.is_admin,
         onboarding_complete: row.onboarding_complete,
       },
       profile: {
-        user_role:       row.user_role,
-        sectors:         row.sectors,
-        location:        row.location,
-        voice_tone:      row.voice_tone,
-        years_experience:row.years_experience,
-        user_headline:   row.user_headline,
-        companies:       row.companies,
-        achievements:    row.achievements,
-        credentials:     row.credentials,
+        user_role: row.user_role, sectors: row.sectors, location: row.location,
+        voice_tone: row.voice_tone, years_experience: row.years_experience,
+        user_headline: row.user_headline, companies: row.companies,
+        achievements: row.achievements, credentials: row.credentials,
       },
-      cv_prefill:         row.cv_prefill        || null,
-      cv_analysis_cache:  row.cv_analysis_cache || null,
-      cv_analyzed_at:     row.cv_analyzed_at    || null,
-      job_match_cache:    row.job_match_cache   || null,
-      job_matched_at:     row.job_matched_at    || null,
+      cv_prefill:        row.cv_prefill        || null,
+      cv_analysis_cache: row.cv_analysis_cache || null,
+      cv_analyzed_at:    row.cv_analyzed_at    || null,
     });
   } catch (err) {
     console.error('[career] handoff error:', err.message);
@@ -272,211 +279,203 @@ router.get('/handoff', requireAuth, async (req, res) => {
 });
 
 // ─── POST /api/career/analyze-cv ─────────────────────────────────────────────
-// Proxies to Groq — expects { messages: [...] }
-// Includes: CV hash caching, token logging, rate limit handling
 router.post('/analyze-cv', requireAuth, async (req, res) => {
   try {
-    const { messages } = req.body;
+    var messages = req.body.messages;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
 
-    console.log(`[career] analyze-cv — user ${req.user.id} — ${messages.length} messages`);
+    console.log('[career] analyze-cv — user ' + req.user.id);
 
-    // ── Check daily CV analysis limit ────────────────────────────────────────
-    const cvLimitErr = await checkCareerLimit(
+    // Check + increment limit
+    var limitErr = await checkAndIncrementLimit(
       req.user.id, req.user.plan, req.user.is_beta, req.user.is_admin, 'cv_analysis'
     );
-    if (cvLimitErr) return res.status(403).json(cvLimitErr);
+    if (limitErr) return res.status(403).json(limitErr);
 
-    // ── CV hash cache — skip Groq if same CV analyzed recently ──────────────
-    const userMsg = messages.find(m => m.role === 'user');
-    if (userMsg?.content) {
-      const cvHash = crypto.createHash('sha256').update(userMsg.content).digest('hex');
-      const cached = await query(
-        `SELECT cv_analysis_cache FROM profiles
-         WHERE user_id = $1
-           AND cv_analysis_hash = $2
-           AND cv_analyzed_at > NOW() - INTERVAL '7 days'`,
+    // CV hash cache
+    var userMsg = null;
+    for (var i = 0; i < messages.length; i++) {
+      if (messages[i].role === 'user') { userMsg = messages[i]; break; }
+    }
+    if (userMsg && userMsg.content) {
+      var cvHash = crypto.createHash('sha256').update(userMsg.content).digest('hex');
+      var cached = await query(
+        'SELECT cv_analysis_cache FROM profiles WHERE user_id = $1 AND cv_analysis_hash = $2 AND cv_analyzed_at > NOW() - INTERVAL \'7 days\'',
         [req.user.id, cvHash]
-      ).catch(() => ({ rows: [] }));
-
-      if (cached.rows[0]?.cv_analysis_cache) {
-        console.log(`[career] ✅ Cache hit for user ${req.user.id} — skipping Groq call`);
+      ).catch(function() { return { rows: [] }; });
+      if (cached.rows[0] && cached.rows[0].cv_analysis_cache) {
+        console.log('[career] Cache hit for user ' + req.user.id);
         return res.json(cached.rows[0].cv_analysis_cache);
       }
     }
 
-    // ── Call Groq ────────────────────────────────────────────────────────────
-    const groqRes = await callGroq({ messages, model: 'llama-3.3-70b-versatile', maxTokens: 4096, temperature: 0.3 });
-
-    const content = groqRes.data?.choices?.[0]?.message?.content;
+    // Call Groq
+    var groqRes = await callGroq({ messages: messages, model: 'llama-3.3-70b-versatile', maxTokens: 4096, temperature: 0.3 });
+    var content = groqRes.data && groqRes.data.choices && groqRes.data.choices[0] ? groqRes.data.choices[0].message.content : null;
     if (!content || !content.trim()) {
-      console.error('[career] analyze-cv — empty content from Groq');
       return res.status(500).json({ error: 'Empty response from AI — please retry' });
     }
 
-    // ── Log token usage ──────────────────────────────────────────────────────
-    const usage = groqRes.data?.usage;
-    if (usage) {
-      console.log(`[career] tokens — prompt: ${usage.prompt_tokens}, completion: ${usage.completion_tokens}, total: ${usage.total_tokens}`);
-      if (usage.total_tokens > 7000) {
-        console.warn(`[career] ⚠️ High token usage: ${usage.total_tokens}`);
-      }
-    }
+    var usage = groqRes.data.usage;
+    if (usage) console.log('[career] tokens — total: ' + usage.total_tokens);
 
-    // ── Increment usage counter ──────────────────────────────────────────────
-    await incrementCareerUsage(req.user.id, 'cv_analysis');
-
-    // ── Save to cache ────────────────────────────────────────────────────────
-    if (userMsg?.content) {
-      const cvHash = crypto.createHash('sha256').update(userMsg.content).digest('hex');
+    // Save to cache
+    if (userMsg && userMsg.content) {
+      var cvHash2 = crypto.createHash('sha256').update(userMsg.content).digest('hex');
       await query(
-        `UPDATE profiles
-         SET cv_analysis_cache = $1,
-             cv_analysis_hash  = $2,
-             cv_analyzed_at    = NOW()
-         WHERE user_id = $3`,
-        [JSON.stringify(groqRes.data), cvHash, req.user.id]
-      ).catch(e => console.warn('[career] cache save failed:', e.message));
+        'UPDATE profiles SET cv_analysis_cache = $1, cv_analysis_hash = $2, cv_analyzed_at = NOW() WHERE user_id = $3',
+        [JSON.stringify(groqRes.data), cvHash2, req.user.id]
+      ).catch(function(e) { console.warn('[career] cache save failed:', e.message); });
     }
 
     res.json(groqRes.data);
-
   } catch (err) {
-    const status  = err?.response?.status;
-    const errData = err?.response?.data;
-    console.error(`[career] analyze-cv error — status: ${status}`, errData || err.message);
-    if (status === 429)
-      return res.status(429).json({ error: 'Rate limit reached — please wait 30 seconds and retry' });
-    if (status === 413)
-      return res.status(413).json({ error: 'CV is too long for analysis — please shorten it and retry' });
-    res.status(500).json({ error: errData?.error?.message || err.message || 'Analysis failed — please retry' });
+    var status  = err && err.response ? err.response.status : 0;
+    var errData = err && err.response ? err.response.data : null;
+    console.error('[career] analyze-cv error — status: ' + status, errData || err.message);
+    if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please wait 30 seconds and retry' });
+    if (status === 413) return res.status(413).json({ error: 'CV is too long for analysis — please shorten it and retry' });
+    res.status(500).json({ error: (errData && errData.error ? errData.error.message : null) || err.message || 'Analysis failed — please retry' });
+  }
+});
+
+// ─── POST /api/career/analyze-deep ───────────────────────────────────────────
+router.post('/analyze-deep', requireAuth, async (req, res) => {
+  try {
+    var messages = req.body.messages;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'messages array is required' });
+    }
+    var groqRes = await callGroq({ messages: messages, model: 'llama-3.3-70b-versatile', maxTokens: 3000, temperature: 0.3 });
+    var content = groqRes.data && groqRes.data.choices && groqRes.data.choices[0] ? groqRes.data.choices[0].message.content : null;
+    if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
+    var usage = groqRes.data.usage;
+    if (usage) console.log('[career/deep] tokens: ' + usage.total_tokens);
+    res.json(groqRes.data);
+  } catch (err) {
+    var status = err && err.response ? err.response.status : 0;
+    if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please retry in 30 seconds' });
+    console.error('[career] analyze-deep error:', err && err.response ? err.response.data : err.message);
+    res.status(500).json({ error: err && err.response && err.response.data && err.response.data.error ? err.response.data.error.message : err.message || 'Deep analysis failed' });
+  }
+});
+
+// ─── POST /api/career/analyze-bullets ────────────────────────────────────────
+router.post('/analyze-bullets', requireAuth, async (req, res) => {
+  try {
+    var messages = req.body.messages;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'messages array is required' });
+    }
+    var groqRes;
+    try {
+      groqRes = await callGemini({ messages: messages, maxTokens: 2000, temperature: 0.1 });
+      console.log('[career/bullets] Using Gemini Flash (free)');
+    } catch (geminiErr) {
+      console.error('[career/gemini] Bullet check failed:', geminiErr.message);
+      groqRes = await callGroq({ messages: messages, model: 'llama-3.1-8b-instant', maxTokens: 2000, temperature: 0.1 });
+      console.log('[career/bullets] Fallback to Groq 8B');
+    }
+    var content = groqRes.data && groqRes.data.choices && groqRes.data.choices[0] ? groqRes.data.choices[0].message.content : null;
+    if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
+    var usage = groqRes.data.usage;
+    if (usage) console.log('[career/bullets] tokens: ' + usage.total_tokens);
+    res.json(groqRes.data);
+  } catch (err) {
+    var status = err && err.response ? err.response.status : 0;
+    if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please retry in 30 seconds' });
+    console.error('[career] analyze-bullets error:', err && err.response ? err.response.data : err.message);
+    res.status(500).json({ error: err && err.response && err.response.data && err.response.data.error ? err.response.data.error.message : err.message || 'Bullet analysis failed' });
   }
 });
 
 // ─── POST /api/career/analyze-job ────────────────────────────────────────────
-// Proxies to Groq — expects { messages: [...] }
 router.post('/analyze-job', requireAuth, async (req, res) => {
   try {
-    const { messages } = req.body;
+    var messages = req.body.messages;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
 
-    // ── Check daily job match limit ───────────────────────────────────────
-    const jobLimitErr = await checkCareerLimit(
+    // Check + increment limit
+    var limitErr = await checkAndIncrementLimit(
       req.user.id, req.user.plan, req.user.is_beta, req.user.is_admin, 'job_match'
     );
-    if (jobLimitErr) return res.status(403).json(jobLimitErr);
+    if (limitErr) return res.status(403).json(limitErr);
 
-    // ── Job match hash cache — skip AI if same CV+JD analyzed recently ────────
-    const userMsg = messages.find(m => m.role === 'user');
-    if (userMsg?.content) {
-      const jobHash = crypto.createHash('sha256').update(userMsg.content).digest('hex');
-      const cached = await query(
-        `SELECT job_match_cache FROM profiles
-         WHERE user_id = $1
-           AND job_match_hash = $2
-           AND job_matched_at > NOW() - INTERVAL '24 hours'`,
-        [req.user.id, jobHash]
-      ).catch(() => ({ rows: [] }));
-
-      if (cached.rows[0]?.job_match_cache) {
-        console.log(`[career/job] ✅ Cache hit for user ${req.user.id}`);
-        return res.json(cached.rows[0].job_match_cache);
-      }
-    }
-
-    // Use Gemini Flash (free) — job matching is keyword comparison, not deep judgment
-    let groqRes;
+    var groqRes;
     try {
-      groqRes = await callGemini({ messages, maxTokens: 2048, temperature: 0.2 });
+      groqRes = await callGemini({ messages: messages, maxTokens: 2048, temperature: 0.2 });
       console.log('[career/job] Using Gemini Flash (free)');
-    } catch {
-      groqRes = await callGroq({ messages, model: 'llama-3.3-70b-versatile', maxTokens: 2048, temperature: 0.3 });
+    } catch (geminiErr) {
+      console.error('[career/gemini] Job match failed:', geminiErr.message);
+      groqRes = await callGroq({ messages: messages, model: 'llama-3.3-70b-versatile', maxTokens: 2048, temperature: 0.3 });
       console.log('[career/job] Fallback to Groq');
     }
-    const content = groqRes.data?.choices?.[0]?.message?.content;
+    var content = groqRes.data && groqRes.data.choices && groqRes.data.choices[0] ? groqRes.data.choices[0].message.content : null;
     if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
-
-    // ── Save job match to cache ───────────────────────────────────────────────
-    if (userMsg?.content) {
-      const jobHash = crypto.createHash('sha256').update(userMsg.content).digest('hex');
-      await query(
-        `UPDATE profiles
-         SET job_match_cache  = $1,
-             job_match_hash   = $2,
-             job_matched_at   = NOW()
-         WHERE user_id = $3`,
-        [JSON.stringify(groqRes.data), jobHash, req.user.id]
-      ).catch(e => console.warn('[career/job] cache save failed:', e.message));
-    }
-
     res.json(groqRes.data);
   } catch (err) {
-    const status = err?.response?.status;
+    var status = err && err.response ? err.response.status : 0;
     if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please retry in 30 seconds' });
-    console.error('[career] analyze-job error:', err?.response?.data || err.message);
-    res.status(500).json({ error: err?.response?.data?.error?.message || err.message || 'Job match failed' });
+    console.error('[career] analyze-job error:', err && err.response ? err.response.data : err.message);
+    res.status(500).json({ error: err && err.response && err.response.data && err.response.data.error ? err.response.data.error.message : err.message || 'Job match failed' });
   }
 });
 
 // ─── POST /api/career/cover-letter ───────────────────────────────────────────
 router.post('/cover-letter', requireAuth, async (req, res) => {
   try {
-    const { cv_text, job_description, user_name, user_role, approved_suggestions } = req.body;
+    var cv_text              = req.body.cv_text;
+    var job_description      = req.body.job_description;
+    var user_name            = req.body.user_name;
+    var user_role            = req.body.user_role;
+    var approved_suggestions = req.body.approved_suggestions;
+
     if (!cv_text || !job_description) {
       return res.status(400).json({ error: 'cv_text and job_description are required' });
     }
-    const coverMsgs = [
+
+    var suggestionsText = '';
+    if (approved_suggestions && approved_suggestions.length) {
+      suggestionsText = 'APPROVED IMPROVEMENTS TO INCORPORATE:\n' + approved_suggestions.slice(0, 5).join('\n');
+    }
+
+    var coverMsgs = [
       {
         role: 'system',
-        content: `You are an expert cover letter writer. Write a professional, personalized cover letter.
-Format: 3–4 paragraphs. Tone: confident but not arrogant. Length: 300–400 words.
-Do NOT use generic phrases like "I am writing to apply". Open with a strong hook.
-Return ONLY the cover letter text — no subject line, no date, no address block.`,
+        content: 'You are an expert cover letter writer. Write a professional, personalized cover letter. Format: 3-4 paragraphs. Tone: confident but not arrogant. Length: 300-400 words. Do NOT use generic phrases like "I am writing to apply". Open with a strong hook. Return ONLY the cover letter text.',
       },
       {
         role: 'user',
-        content: `Write a cover letter for ${user_name || 'the candidate'} (${user_role || 'professional'}).
-
-CV SUMMARY:
-${cv_text.slice(0, 3000)}
-
-JOB DESCRIPTION:
-${job_description.slice(0, 2000)}
-
-${approved_suggestions?.length ? `APPROVED IMPROVEMENTS TO INCORPORATE:\n${approved_suggestions.slice(0, 5).join('\n')}` : ''}`,
+        content: 'Write a cover letter for ' + (user_name || 'the candidate') + ' (' + (user_role || 'professional') + ').\n\nCV SUMMARY:\n' + cv_text.slice(0, 3000) + '\n\nJOB DESCRIPTION:\n' + job_description.slice(0, 2000) + (suggestionsText ? '\n\n' + suggestionsText : ''),
       },
     ];
-    // Use Gemini Flash (free) for cover letter — writing task, not analysis
-    let groqRes;
+
+    var groqRes;
     try {
       groqRes = await callGemini({ messages: coverMsgs, maxTokens: 1500, temperature: 0.7 });
       console.log('[career/cover] Using Gemini Flash (free)');
-    } catch {
+    } catch (geminiErr) {
       groqRes = await callGroq({ messages: coverMsgs, model: 'llama-3.3-70b-versatile', maxTokens: 1500, temperature: 0.7 });
     }
-    const cover_letter = groqRes.data?.choices?.[0]?.message?.content || '';
+    var cover_letter = groqRes.data && groqRes.data.choices && groqRes.data.choices[0] ? groqRes.data.choices[0].message.content || '' : '';
     if (!cover_letter) return res.status(500).json({ error: 'Failed to generate cover letter' });
-    res.json({ cover_letter });
+    res.json({ cover_letter: cover_letter });
   } catch (err) {
-    console.error('[career] cover-letter error:', err?.response?.data || err.message);
-    res.status(500).json({ error: err?.response?.data?.error?.message || err.message || 'Cover letter generation failed' });
+    console.error('[career] cover-letter error:', err && err.response ? err.response.data : err.message);
+    res.status(500).json({ error: err && err.response && err.response.data && err.response.data.error ? err.response.data.error.message : err.message || 'Cover letter generation failed' });
   }
 });
 
 // ─── POST /api/career/save-cv ─────────────────────────────────────────────────
-// Saves optimised CV text to profiles.about_summary
 router.post('/save-cv', requireAuth, async (req, res) => {
   try {
-    const { cv_text } = req.body;
+    var cv_text = req.body.cv_text;
     if (!cv_text) return res.status(400).json({ error: 'cv_text is required' });
-    await query(
-      `UPDATE profiles SET about_summary = $1 WHERE user_id = $2`,
-      [cv_text, req.user.id]
-    );
+    await query('UPDATE profiles SET about_summary = $1 WHERE user_id = $2', [cv_text, req.user.id]);
     res.json({ success: true });
   } catch (err) {
     console.error('[career] save-cv error:', err.message);
@@ -485,88 +484,27 @@ router.post('/save-cv', requireAuth, async (req, res) => {
 });
 
 // ─── GET /api/career/status ───────────────────────────────────────────────────
-// Feature gate check per plan
 router.get('/status', requireAuth, async (req, res) => {
   try {
-    const { rows } = await query(
-      `SELECT u.plan, u.is_beta, u.is_admin FROM users u WHERE u.id = $1`,
-      [req.user.id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'User not found' });
-    const { plan, is_beta, is_admin } = rows[0];
+    var result = await query('SELECT u.plan, u.is_beta, u.is_admin FROM users u WHERE u.id = $1', [req.user.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'User not found' });
+    var plan     = result.rows[0].plan;
+    var is_beta  = result.rows[0].is_beta;
+    var is_admin = result.rows[0].is_admin;
     res.json({
-      enabled:    true,
-      plan,
-      is_beta,
-      is_admin,
+      enabled: true, plan: plan, is_beta: is_beta, is_admin: is_admin,
       features: {
-        full_analysis:   is_beta || is_admin || plan === 'pro',
-        job_match:       is_beta || is_admin || ['pro', 'starter'].includes(plan),
-        cover_letter:    is_beta || is_admin || plan === 'pro',
-        export_word:     is_beta || is_admin || plan === 'pro',
-        export_pdf:      true,
-        templates_all:   is_beta || is_admin || plan === 'pro',
+        full_analysis:  is_beta || is_admin || plan === 'pro',
+        job_match:      is_beta || is_admin || plan === 'pro' || plan === 'starter',
+        cover_letter:   is_beta || is_admin || plan === 'pro',
+        export_word:    is_beta || is_admin || plan === 'pro',
+        export_pdf:     true,
+        templates_all:  is_beta || is_admin || plan === 'pro',
       },
     });
   } catch (err) {
     console.error('[career] status error:', err.message);
     res.status(500).json({ error: err.message });
-  }
-});
-
-
-// ─── POST /api/career/analyze-deep ───────────────────────────────────────────
-// Call 2 — Deep intel: credibility, leadership, career story, interview risks
-// Uses 70B model — runs in parallel with analyze-cv
-router.post('/analyze-deep', requireAuth, async (req, res) => {
-  try {
-    const { messages } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'messages array is required' });
-    }
-    const groqRes = await callGroq({ messages, model: 'llama-3.3-70b-versatile', maxTokens: 3000, temperature: 0.3 });
-    const content = groqRes.data?.choices?.[0]?.message?.content;
-    if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
-    const usage = groqRes.data?.usage;
-    if (usage) console.log(`[career/deep] tokens: ${usage.total_tokens}`);
-    res.json(groqRes.data);
-  } catch (err) {
-    const status = err?.response?.status;
-    if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please retry in 30 seconds' });
-    console.error('[career] analyze-deep error:', err?.response?.data || err.message);
-    res.status(500).json({ error: err?.response?.data?.error?.message || err.message || 'Deep analysis failed' });
-  }
-});
-
-// ─── POST /api/career/analyze-bullets ────────────────────────────────────────
-// Call 3 — Bullet & vocabulary checks using fast 8B model
-// Pattern matching only — no recruiter judgment needed
-router.post('/analyze-bullets', requireAuth, async (req, res) => {
-  try {
-    const { messages } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'messages array is required' });
-    }
-    // Use Gemini Flash (free) for pattern matching — no deep judgment needed
-    let groqRes;
-    try {
-      groqRes = await callGemini({ messages, maxTokens: 2000, temperature: 0.1 });
-      console.log('[career/bullets] Using Gemini Flash (free)');
-    } catch {
-      // Fallback to Groq 8B if Gemini unavailable
-      groqRes = await callGroq({ messages, model: 'llama-3.1-8b-instant', maxTokens: 2000, temperature: 0.1 });
-      console.log('[career/bullets] Fallback to Groq 8B');
-    }
-    const content = groqRes.data?.choices?.[0]?.message?.content;
-    if (!content) return res.status(500).json({ error: 'Empty response from AI — please retry' });
-    const usage = groqRes.data?.usage;
-    if (usage) console.log(`[career/bullets] tokens: ${usage.total_tokens}`);
-    res.json(groqRes.data);
-  } catch (err) {
-    const status = err?.response?.status;
-    if (status === 429) return res.status(429).json({ error: 'Rate limit reached — please retry in 30 seconds' });
-    console.error('[career] analyze-bullets error:', err?.response?.data || err.message);
-    res.status(500).json({ error: err?.response?.data?.error?.message || err.message || 'Bullet analysis failed' });
   }
 });
 
