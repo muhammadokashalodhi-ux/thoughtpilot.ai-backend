@@ -12,60 +12,65 @@ const { getLimitsForPlan } = require('../config/limits');
 async function checkCareerLimit(userId, plan, isBeta, isAdmin, limitType) {
   if (isBeta || isAdmin) return null; // unlimited
 
-  const dbQuery = query; // use already-imported query
   const limits = getLimitsForPlan(plan);
+  const today  = new Date().toISOString().slice(0, 10);
 
-  // Ensure row exists
-  await dbQuery(
-    `INSERT INTO usage_tracking (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
-    [userId]
-  );
-
-  const today = new Date().toISOString().slice(0, 10);
-  const r = await dbQuery(
-    `SELECT cv_analyses_today, cv_day_reset_at, job_matches_today, job_day_reset_at
-     FROM usage_tracking WHERE user_id = $1`,
-    [userId]
-  );
-  const row = r.rows[0] || {};
-
+  // Upsert row — ensure it exists with today's reset dates
+  // Use a single UPSERT that also handles daily resets atomically
   if (limitType === 'cv_analysis') {
-    // Reset daily counter if it's a new day
-    if (!row.cv_day_reset_at || row.cv_day_reset_at.toISOString().slice(0, 10) !== today) {
-      await dbQuery(
-        `UPDATE usage_tracking SET cv_analyses_today = 0, cv_day_reset_at = CURRENT_DATE WHERE user_id = $1`,
-        [userId]
-      );
-      row.cv_analyses_today = 0;
-    }
-    const used  = row.cv_analyses_today || 0;
+    const r = await query(`
+      INSERT INTO usage_tracking (user_id, cv_analyses_today, cv_day_reset_at)
+      VALUES ($1, 0, CURRENT_DATE)
+      ON CONFLICT (user_id) DO UPDATE SET
+        cv_analyses_today = CASE
+          WHEN usage_tracking.cv_day_reset_at < CURRENT_DATE
+          THEN 0
+          ELSE usage_tracking.cv_analyses_today
+        END,
+        cv_day_reset_at = CURRENT_DATE
+      RETURNING cv_analyses_today
+    `, [userId]);
+
+    const used  = r.rows[0]?.cv_analyses_today ?? 0;
     const limit = limits.cv_analyses_per_day ?? 1;
+
+    console.log(`[career] CV limit check — user: \${userId}, plan: \${plan}, used: \${used}, limit: \${limit}`);
+
     if (used >= limit) {
       return {
-        error: 'Daily CV analysis limit reached',
+        error: 'Daily CV analysis limit reached — upgrade to analyse more CVs',
         code:  'USAGE_LIMIT', limit_key: 'cv_analyses_per_day',
         used, limit, plan,
-        upgrade_url: `${process.env.FRONTEND_URL}/dashboard/billing`,
+        upgrade_url: `\${process.env.FRONTEND_URL}/dashboard/billing`,
       };
     }
   }
 
   if (limitType === 'job_match') {
-    if (!row.job_day_reset_at || row.job_day_reset_at.toISOString().slice(0, 10) !== today) {
-      await dbQuery(
-        `UPDATE usage_tracking SET job_matches_today = 0, job_day_reset_at = CURRENT_DATE WHERE user_id = $1`,
-        [userId]
-      );
-      row.job_matches_today = 0;
-    }
-    const used  = row.job_matches_today || 0;
+    const r = await query(`
+      INSERT INTO usage_tracking (user_id, job_matches_today, job_day_reset_at)
+      VALUES ($1, 0, CURRENT_DATE)
+      ON CONFLICT (user_id) DO UPDATE SET
+        job_matches_today = CASE
+          WHEN usage_tracking.job_day_reset_at < CURRENT_DATE
+          THEN 0
+          ELSE usage_tracking.job_matches_today
+        END,
+        job_day_reset_at = CURRENT_DATE
+      RETURNING job_matches_today
+    `, [userId]);
+
+    const used  = r.rows[0]?.job_matches_today ?? 0;
     const limit = limits.job_matches_per_day ?? 2;
+
+    console.log(`[career] Job limit check — user: \${userId}, plan: \${plan}, used: \${used}, limit: \${limit}`);
+
     if (used >= limit) {
       return {
-        error: 'Daily job match limit reached',
+        error: 'Daily job match limit reached — upgrade to run more matches',
         code:  'USAGE_LIMIT', limit_key: 'job_matches_per_day',
         used, limit, plan,
-        upgrade_url: `${process.env.FRONTEND_URL}/dashboard/billing`,
+        upgrade_url: `\${process.env.FRONTEND_URL}/dashboard/billing`,
       };
     }
   }
@@ -74,19 +79,24 @@ async function checkCareerLimit(userId, plan, isBeta, isAdmin, limitType) {
 }
 
 async function incrementCareerUsage(userId, limitType) {
-  const dbQuery = query; // use already-imported query
   try {
     if (limitType === 'cv_analysis') {
-      await dbQuery(
-        `UPDATE usage_tracking SET cv_analyses_today = cv_analyses_today + 1 WHERE user_id = $1`,
+      await query(
+        `UPDATE usage_tracking
+         SET cv_analyses_today = cv_analyses_today + 1
+         WHERE user_id = $1`,
         [userId]
       );
+      console.log(`[career] CV analysis incremented for user \${userId}`);
     }
     if (limitType === 'job_match') {
-      await dbQuery(
-        `UPDATE usage_tracking SET job_matches_today = job_matches_today + 1 WHERE user_id = $1`,
+      await query(
+        `UPDATE usage_tracking
+         SET job_matches_today = job_matches_today + 1
+         WHERE user_id = $1`,
         [userId]
       );
+      console.log(`[career] Job match incremented for user \${userId}`);
     }
   } catch (err) {
     console.error('[career] incrementCareerUsage failed:', err.message);
