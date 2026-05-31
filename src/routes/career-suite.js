@@ -293,9 +293,6 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
       return res.status(500).json({ error: 'Empty response from AI — please retry' });
     }
 
-    // ── Increment usage counter ──────────────────────────────────────────────
-    await incrementCareerUsage(req.user.id, 'cv_analysis');
-
     // ── Log token usage ──────────────────────────────────────────────────────
     const usage = groqRes.data?.usage;
     if (usage) {
