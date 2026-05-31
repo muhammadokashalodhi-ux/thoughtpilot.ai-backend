@@ -283,6 +283,12 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
 
     console.log(`[career] analyze-cv — user ${req.user.id} — ${messages.length} messages`);
 
+    // ── Check daily CV analysis limit ────────────────────────────────────────
+    const cvLimitErr = await checkCareerLimit(
+      req.user.id, req.user.plan, req.user.is_beta, req.user.is_admin, 'cv_analysis'
+    );
+    if (cvLimitErr) return res.status(403).json(cvLimitErr);
+
     // ── CV hash cache — skip Groq if same CV analyzed recently ──────────────
     const userMsg = messages.find(m => m.role === 'user');
     if (userMsg?.content) {
@@ -318,6 +324,9 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
         console.warn(`[career] ⚠️ High token usage: ${usage.total_tokens}`);
       }
     }
+
+    // ── Increment usage counter ──────────────────────────────────────────────
+    await incrementCareerUsage(req.user.id, 'cv_analysis');
 
     // ── Save to cache ────────────────────────────────────────────────────────
     if (userMsg?.content) {
