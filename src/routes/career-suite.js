@@ -119,11 +119,26 @@ async function callGroq({ messages, model = 'llama-3.3-70b-versatile', maxTokens
 
   for (const currentModel of chain) {
     const MAX_RETRIES = 2;
+
+    // 8B model has very low TPM (6K) — trim messages to fit
+    let effectiveMessages = messages;
+    if (currentModel === 'llama-3.1-8b-instant') {
+      effectiveMessages = messages.map(m => {
+        if (m.role === 'user' && m.content && m.content.length > 8000) {
+          return { ...m, content: m.content.slice(0, 8000) + '
+
+[Content trimmed for 8B model]' };
+        }
+        return m;
+      });
+      maxTokens = Math.min(maxTokens, 1500); // 8B max output also limited
+    }
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const res = await axios.post(
           'https://api.groq.com/openai/v1/chat/completions',
-          { model: currentModel, max_tokens: maxTokens, temperature, messages, response_format: { type: 'json_object' } },
+          { model: currentModel, max_tokens: maxTokens, temperature, messages: effectiveMessages, response_format: { type: 'json_object' } },
           {
             headers: { Authorization: `Bearer ${process.env.GROQ_CAREER_API_KEY || process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
             timeout: 90000,
@@ -159,7 +174,7 @@ async function callGroq({ messages, model = 'llama-3.3-70b-versatile', maxTokens
 async function callGemini({ messages, maxTokens = 2000, temperature = 0.1 }) {
   const GEMINI_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_KEY) {
-    console.warn('[career/gemini] No GEMINI_API_KEY — falling back to Groq');
+    console.error('[career/gemini] GEMINI_API_KEY not set in Railway env vars');
     throw new Error('Gemini not configured');
   }
 
@@ -189,7 +204,10 @@ ${userMsg}` }],
   );
 
   const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('Empty response from Gemini');
+  if (!text) {
+    console.error('[career/gemini] Empty response — candidates:', JSON.stringify(res.data?.candidates?.slice(0,1)));
+    throw new Error('Empty response from Gemini');
+  }
 
   // Return in same shape as Groq so callers work identically
   return {
@@ -322,7 +340,7 @@ router.post('/analyze-cv', requireAuth, async (req, res) => {
     console.error(`[career] analyze-cv error — status: ${status}`, errData || err.message);
     if (status === 429)
       return res.status(429).json({ error: 'Rate limit reached — please wait 30 seconds and retry' });
-    if (status === 413 || err?.message?.includes('context'))
+    if (status === 413)
       return res.status(413).json({ error: 'CV is too long for analysis — please shorten it and retry' });
     res.status(500).json({ error: errData?.error?.message || err.message || 'Analysis failed — please retry' });
   }
