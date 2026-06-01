@@ -74,6 +74,7 @@ router.get('/', requireAuth, async (req, res) => {
         let used = 0;
         if (row?.trend_week_reset_at?.toISOString().slice(0, 10) !== thisWeek) {
           await dbQuery(`UPDATE usage_tracking SET trend_refreshes_this_week = 0, trend_week_reset_at = date_trunc('week', CURRENT_DATE)::DATE WHERE user_id = $1`, [req.user.id]);
+          used = 0; // fresh week — counter just reset
         } else {
           used = row?.trend_refreshes_this_week || 0;
         }
