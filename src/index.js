@@ -45,8 +45,10 @@ const allowedOrigins = [
   'https://careers.thoughtpilotai.com',
   'http://localhost:3000',
   'http://localhost:3001',
-  // Chrome extension
+  // Chrome extension — published
   'chrome-extension://ddbepdlblininmcnbeegpmfjimbnhbef',
+  // Chrome extension — dev/test unpacked
+  'chrome-extension://pcmenenacmnkemlikgknpfnfffogfgfn',
 ].filter(Boolean);
 
 app.use(cors({
